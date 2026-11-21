@@ -22,7 +22,7 @@ Stop-loss is placed beyond the recent 5-candle swing with a 0.15 ATR buffer. Tel
 
 ## Data correctness
 
-- Forming WebSocket candles cannot create MEX setups. The detector explicitly rejects any 5-minute candle that has not closed.
+- Forming WebSocket candles cannot create MEX setups. `MEX_LIVE_ENABLED=false` disables the forming-candle detector path; the detector also rejects any 5-minute candle that has not closed. Live L1 quotes remain enabled for breakout trigger confirmation.
 - RVOL uses actual completed-candle volume; no elapsed-time volume projection is used in the MEX V2 calculation.
 - 5-minute REST history is expanded to 320 bars so the current UTC day's VWAP session is available (up to 288 bars).
 - The scanner's recent 60-bar continuity check, quote freshness, setup persistence, deduplication, Telegram outbox and PostgreSQL production-state requirements are retained.
