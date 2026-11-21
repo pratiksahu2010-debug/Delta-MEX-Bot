@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     tpr_rb_symbols_file: str = "config/tpr_rb_symbols.txt"
     adx_min: float = 19.0
     mex_enabled: bool = True
+    # MEX V2 arms setups only from completed REST candles; live WS candles are trigger data only.
+    mex_live_enabled: bool = False
     orb_enabled: bool = True
     orb_min_rvol: float = 1.10
     tpr_enabled: bool = True
