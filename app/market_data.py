@@ -153,6 +153,9 @@ class DeltaRestClient:
         raise RuntimeError("Delta REST request exhausted retries")
 
     async def candles(self, symbol: str, resolution: str, limit: int = 120) -> list[Candle]:
+        # MEX requires the complete UTC-day VWAP session; 320 bars cover 26h40m.
+        if resolution == "5m":
+            limit = max(int(limit), 320)
         seconds = RESOLUTION_SECONDS[resolution]
         end = int(time.time())
         start = end - seconds * (limit + 3)
