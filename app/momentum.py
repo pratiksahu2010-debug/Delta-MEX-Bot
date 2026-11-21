@@ -73,7 +73,9 @@ def _frame(frame, diagnostics=None):
         return _reject(diagnostics, "data_validation", "invalid_ohlc_structure")
     if (f.low > f[["open", "close", "high"]].min(axis=1)).any():
         return _reject(diagnostics, "data_validation", "invalid_ohlc_structure")
-    gaps = f.timestamp.diff().dropna().dt.total_seconds()
+    # Recent 60-bar continuity is enforced by the scanner; older session history
+    # may contain exchange omissions and must not veto the current setup.
+    gaps = f.timestamp.diff().dropna().dt.total_seconds().tail(59)
     if not gaps.empty and (gaps != 300).any():
         return _reject(diagnostics, "data_validation", "non_contiguous_5m_candles")
     return f
