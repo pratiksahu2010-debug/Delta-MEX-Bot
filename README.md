@@ -1,35 +1,56 @@
-# Delta Exchange India Signal Bot — MEX
+# Delta Exchange India Signal Bot — MEX V2
 
-This is an isolated single-module build from the supplied combined bot source.
+Crypto-only, signal-only Momentum Explosion detector for Delta Exchange India.
 
-## Strategy scope
-Only Momentum Explosion (MEX). ORB, RB and TPR detector implementations and detector modules are removed from this package.
+## MEX V2 decision model
 
-- Fixed market-data universe: 120 symbols.
-- 5-minute completed candles and live quote confirmation are retained.
-- Existing indicator calculations, strategy thresholds, trigger confirmation, structural stop validation, signal journal, Telegram delivery and market-data handling are retained.
-- 15-minute context remains informational; this split does not add a new 15-minute blocking gate.
-- Signal-only: `SIGNAL_ONLY=true`, `ORDERS_ENABLED=false`. Order execution is not implemented/enabled.
+The detector uses four decision indicators:
 
-## Run locally
-1. Use Python 3.11.9.
-2. Install dependencies: `pip install -r requirements.txt`.
-3. Copy `.env.example` to `.env`.
-4. Fill Delta/Telegram/database settings. Keep `SIGNAL_ONLY=true` and `ORDERS_ENABLED=false`.
-5. Run: `uvicorn app.main:app --host 0.0.0.0 --port 8000`.
+- **TTM Squeeze:** Bollinger Bands (20, 2 standard deviations) inside Keltner Channels (EMA 20, 1.5 × ATR 20); a setup requires a squeeze-on previous completed candle followed by a squeeze release.
+- **TTM momentum:** 20-period linear-regression momentum histogram; LONG requires positive and rising momentum, SHORT requires negative and falling momentum.
+- **RVOL:** current completed 5-minute candle volume divided by the average volume of the preceding 20 completed candles; minimum 1.50.
+- **ADX + DI:** ADX(14) minimum 19; +DI must exceed -DI for LONG and -DI must exceed +DI for SHORT.
+- **Session VWAP:** UTC-midnight anchored VWAP; LONG close above VWAP, SHORT close below VWAP.
 
-## Render deployment
-- Create a separate Render Web Service for this ZIP/repository.
-- Use `render.yaml` or the commands above.
-- Set a dedicated PostgreSQL `DATABASE_URL` for this bot. **Do not point the MEX and ORB bots at the same database**; this keeps setup lifecycle, journal and Telegram outbox state isolated.
-- Configure its own Telegram bot token/chat ID if you want separate alert channels.
-- The blueprint uses the free web-service plan; the database is provisioned separately.
+The TTM momentum histogram is part of the TTM Squeeze indicator family, not an additional standalone indicator. ATR is retained only for structural stop-loss sizing and is not a fifth signal filter.
 
-## Environment isolation
-`BOT_MODULE=MEX` identifies this single-strategy distribution. ORB/RB/TPR detector code is not shipped here.
+## Entry qualification
 
-## Checks
-Run the targeted isolation/health tests:
-`pytest -q tests/test_symbol_universes.py tests/test_render_config.py tests/test_operational_endpoints.py`
+A setup also requires a completed 5-minute candle close beyond the preceding 8-candle high/low and a directional candle-quality check. The setup is armed at the breakout candle's high/low. A fresh L1 ask (LONG) or bid (SHORT) must cross and hold the trigger through the existing quote-confirmation lifecycle. Extended entries and structural stops above 3 ATR are rejected.
 
-The full test suite should be run in an environment with all `requirements.txt` dependencies installed, including `psycopg[binary]`.
+Stop-loss is placed beyond the recent 5-candle swing with a 0.15 ATR buffer. Telegram target is 2R where valid. Signals only; no order execution is implemented or enabled.
+
+## Data correctness
+
+- Forming WebSocket candles cannot create MEX setups. The detector explicitly rejects any 5-minute candle that has not closed.
+- RVOL uses actual completed-candle volume; no elapsed-time volume projection is used in the MEX V2 calculation.
+- 5-minute REST history is expanded to 320 bars so the current UTC day's VWAP session is available (up to 288 bars).
+- The scanner's recent 60-bar continuity check, quote freshness, setup persistence, deduplication, Telegram outbox and PostgreSQL production-state requirements are retained.
+
+## Environment
+
+- \`BOT_MODULE=MEX\`
+- \`ADX_MIN=19\`
+- \`MEX_MIN_RVOL=1.50\`
+- \`SIGNAL_ONLY=true\`
+- \`ORDERS_ENABLED=false\`
+
+\`MEX_MIN_ATR_EXPANSION\` remains accepted for backwards-compatible configuration but is no longer a MEX signal gate.
+
+## Run and deploy
+
+Python 3.11.9. Install \`requirements.txt\`, configure \`.env\`, then run:
+
+\`\`\`bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+\`\`\`
+
+For Render production, configure a dedicated PostgreSQL \`DATABASE_URL\`; do not share the MEX state database with another bot.
+
+## Tests
+
+Run:
+
+\`\`\`bash
+pytest -q tests/test_mex_v2.py
+\`\`\`
