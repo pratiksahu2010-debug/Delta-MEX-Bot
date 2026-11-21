@@ -88,8 +88,8 @@ class SignalEngine:
                 "rejections": 0, "rejections_by_reason": {},
                 "detail_counts": {}, "recent_rejections": [], "last_rejection": None,
                 "last_rejection_by_reason": {},
-                "mex_gate_counts": {"evaluated": 0, "rvol_pass": 0, "rvol_fail": 0,
-                                    "atr_expansion_pass": 0, "atr_expansion_fail": 0},
+                "mex_gate_counts": {"evaluated": 0, "squeeze_pass": 0, "squeeze_fail": 0,
+                                    "rvol_pass": 0, "rvol_fail": 0, "adx_pass": 0, "adx_fail": 0},
                 "mex_evaluation_sources": {
                     "live_forming": {"evaluations": 0, "unique_symbol_candles": 0,
                                      "setups": 0, "rejections": 0},
@@ -427,12 +427,12 @@ class SignalEngine:
         if result:
             if strategy == "MEX":
                 gates = self.strategy_diagnostics[strategy].setdefault("mex_gate_counts", {
-                    "evaluated": 0, "rvol_pass": 0, "rvol_fail": 0,
-                    "atr_expansion_pass": 0, "atr_expansion_fail": 0,
+                    "evaluated": 0, "squeeze_pass": 0, "squeeze_fail": 0,
+                    "rvol_pass": 0, "rvol_fail": 0, "adx_pass": 0, "adx_fail": 0,
                 })
                 gates["evaluated"] += 1
-                gates["rvol_pass"] += 1
-                gates["atr_expansion_pass"] += 1
+                for gate in ("squeeze", "rvol", "adx"):
+                    gates[f"{gate}_pass"] += 1
             stats["setups_armed"] += 1
         else:
             stats["no_setup"] += 1
@@ -449,14 +449,17 @@ class SignalEngine:
                     "atr_expansion_pass": 0, "atr_expansion_fail": 0,
                 })
                 failed = set(values.get("failed_filters", [])) if isinstance(values, dict) else set()
-                # A detector rejection after the participation/expansion stage
-                # necessarily passed both gates. Warmup/data errors are excluded.
-                if reason != "indicator_warmup_or_invalid":
+                # Gate counters follow the ordered MEX V2 pipeline. A later-stage
+                # rejection proves all earlier gates passed.
+                stage = diagnostic.get("stage")
+                if stage not in ("history", "data_validation", "indicators", "candle"):
                     gates["evaluated"] += 1
-                    for gate in ("rvol", "atr_expansion"):
-                        passed = gate not in failed
-                        key = f"{gate}_{'pass' if passed else 'fail'}"
-                        gates[key] += 1
+                    ordered_gates = ("squeeze", "rvol", "adx")
+                    failed_gate = {"squeeze": "squeeze", "rvol": "rvol", "adx": "adx"}.get(stage)
+                    for gate in ordered_gates:
+                        outcome = "fail" if gate == failed_gate else "pass"
+                        if failed_gate is None or ordered_gates.index(gate) < ordered_gates.index(failed_gate) or gate == failed_gate:
+                            gates[f"{gate}_{outcome}"] += 1
             # Preserve bounded, numeric evidence so /status can distinguish
             # low participation from weak volatility expansion without
             # changing detector eligibility or flooding application logs.
