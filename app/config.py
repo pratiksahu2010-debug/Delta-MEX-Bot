@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     symbols: str = "BTCUSD,ETHUSD,SOLUSD"
     momentum_symbols_file: str = "config/momentum_symbols.txt"
     tpr_rb_symbols_file: str = "config/tpr_rb_symbols.txt"
-    adx_min: float = 17.0
+    adx_min: float = 19.0
     mex_enabled: bool = True
     orb_enabled: bool = True
     orb_min_rvol: float = 1.10
