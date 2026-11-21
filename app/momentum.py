@@ -1,17 +1,29 @@
-"""Independent completed-5m ORB and MEX setup detectors.
+"""MEX V2: completed-candle TTM Squeeze momentum explosion detector.
 
-Both detectors return setup intents only. SignalEngine performs fresh L1
-quote confirmation, extension/risk validation, durable deduplication and
-Telegram delivery. No forming candle or order API is used here.
+The detector uses only four decision indicators: TTM Squeeze, RVOL,
+ADX/+DI/-DI and UTC-session VWAP. ATR is retained only for structural risk
+sizing. It returns a setup intent; SignalEngine handles live quote confirmation,
+persistence, deduplication and Telegram delivery.
 """
-from datetime import datetime, time, timedelta, timezone
-from zoneinfo import ZoneInfo
 import math
+
 import numpy as np
 import pandas as pd
-from .risk import LIVE_TARGET_R_MULTIPLE
-from .indicators import adx, atr, ema, rsi, vwap
+
 from .candle_quality import directional_candle_quality
+from .indicators import adx, atr, vwap
+from .risk import LIVE_TARGET_R_MULTIPLE
+
+
+BB_LENGTH = 20
+BB_STDDEV = 2.0
+KC_LENGTH = 20
+KC_ATR_MULTIPLE = 1.5
+RVOL_LENGTH = 20
+ADX_LENGTH = 14
+ADX_MIN_DEFAULT = 19.0
+BREAKOUT_LOOKBACK = 8
+
 
 def _reject(diagnostics, stage: str, reason: str, values=None):
     if diagnostics is not None:
@@ -20,7 +32,7 @@ def _reject(diagnostics, stage: str, reason: str, values=None):
         if values:
             clean = {}
             for key, value in values.items():
-                if isinstance(value, (int, float)):
+                if isinstance(value, (int, float, np.number)):
                     number = float(value)
                     clean[key] = round(number, 6) if math.isfinite(number) else None
                 else:
@@ -31,8 +43,8 @@ def _reject(diagnostics, stage: str, reason: str, values=None):
 
 def _finite(value):
     try:
-        value = float(value)
-        return value if math.isfinite(value) else None
+        number = float(value)
+        return number if math.isfinite(number) else None
     except (TypeError, ValueError, OverflowError):
         return None
 
@@ -40,15 +52,18 @@ def _finite(value):
 def _frame(frame, diagnostics=None):
     required = {"timestamp", "open", "high", "low", "close", "volume"}
     if not isinstance(frame, pd.DataFrame) or not required.issubset(frame.columns) or len(frame) < 60:
-        return _reject(diagnostics, "history", "insufficient_or_missing_ohlcv", {"bars": len(frame) if isinstance(frame, pd.DataFrame) else 0})
+        return _reject(
+            diagnostics, "history", "insufficient_or_missing_ohlcv",
+            {"bars": len(frame) if isinstance(frame, pd.DataFrame) else 0},
+        )
     f = frame.copy()
     f["timestamp"] = pd.to_datetime(f["timestamp"], utc=True, errors="coerce")
-    for col in ("open", "high", "low", "close", "volume"):
-        f[col] = pd.to_numeric(f[col], errors="coerce")
-    numeric_columns = ["open", "high", "low", "close", "volume"]
-    if f[["timestamp", *numeric_columns]].isna().any().any():
+    for column in ("open", "high", "low", "close", "volume"):
+        f[column] = pd.to_numeric(f[column], errors="coerce")
+    columns = ["open", "high", "low", "close", "volume"]
+    if f[["timestamp", *columns]].isna().any().any():
         return _reject(diagnostics, "data_validation", "invalid_timestamp_or_ohlcv")
-    if not np.isfinite(f[numeric_columns].to_numpy(dtype=float)).all():
+    if not np.isfinite(f[columns].to_numpy(dtype=float)).all():
         return _reject(diagnostics, "data_validation", "non_finite_ohlcv")
     f = f.sort_values("timestamp").reset_index(drop=True)
     if f.timestamp.duplicated().any() or (f.volume < 0).any():
@@ -57,141 +72,163 @@ def _frame(frame, diagnostics=None):
         return _reject(diagnostics, "data_validation", "invalid_ohlc_structure")
     if (f.low > f[["open", "close", "high"]].min(axis=1)).any():
         return _reject(diagnostics, "data_validation", "invalid_ohlc_structure")
+    gaps = f.timestamp.diff().dropna().dt.total_seconds()
+    if not gaps.empty and (gaps != 300).any():
+        return _reject(diagnostics, "data_validation", "non_contiguous_5m_candles")
     return f
 
 
-def _indicators(f):
-    f = f.copy()
-    f["ema9"] = ema(f.close, 9)
-    f["ema21"] = ema(f.close, 21)
-    f["ema20"] = ema(f.close, 20)
-    f["ema50"] = ema(f.close, 50)
-    f["rsi"] = rsi(f.close, 14)
+def _linear_regression_endpoint(values):
+    array = np.asarray(values, dtype=float)
+    if len(array) < 2 or not np.isfinite(array).all():
+        return np.nan
+    x = np.arange(len(array), dtype=float)
+    slope, intercept = np.polyfit(x, array, 1)
+    return float(intercept + slope * (len(array) - 1))
+
+
+def _indicators(frame):
+    f = frame.copy()
     f["atr"] = atr(f, 14)
-    f["adx"], f["plus_di"], f["minus_di"] = adx(f, 14)
+    f["adx"], f["plus_di"], f["minus_di"] = adx(f, ADX_LENGTH)
+
+    # Bollinger Bands: SMA(20) +/- 2 population standard deviations.
+    f["bb_mid"] = f.close.rolling(BB_LENGTH, min_periods=BB_LENGTH).mean()
+    f["bb_std"] = f.close.rolling(BB_LENGTH, min_periods=BB_LENGTH).std(ddof=0)
+    f["bb_upper"] = f.bb_mid + BB_STDDEV * f.bb_std
+    f["bb_lower"] = f.bb_mid - BB_STDDEV * f.bb_std
+
+    # Keltner Channels: EMA(20) +/- 1.5 * ATR(20).
+    f["kc_mid"] = f.close.ewm(span=KC_LENGTH, adjust=False, min_periods=KC_LENGTH).mean()
+    f["kc_atr"] = atr(f, KC_LENGTH)
+    f["kc_upper"] = f.kc_mid + KC_ATR_MULTIPLE * f.kc_atr
+    f["kc_lower"] = f.kc_mid - KC_ATR_MULTIPLE * f.kc_atr
+    f["squeeze_on"] = (f.bb_upper < f.kc_upper) & (f.bb_lower > f.kc_lower)
+    f["squeeze_release"] = f.squeeze_on.shift(1, fill_value=False) & ~f.squeeze_on
+
+    # TTM momentum histogram: linear-regression endpoint of close minus the
+    # midpoint of the Donchian midpoint and 20-period SMA.
+    highest = f.high.rolling(BB_LENGTH, min_periods=BB_LENGTH).max()
+    lowest = f.low.rolling(BB_LENGTH, min_periods=BB_LENGTH).min()
+    momentum_base = ((highest + lowest) / 2.0 + f.close.rolling(
+        BB_LENGTH, min_periods=BB_LENGTH
+    ).mean()) / 2.0
+    momentum_raw = f.close - momentum_base
+    f["ttm_momentum"] = momentum_raw.rolling(
+        BB_LENGTH, min_periods=BB_LENGTH
+    ).apply(_linear_regression_endpoint, raw=True)
+
+    # RVOL compares the completed candle to the preceding 20 completed candles.
+    f["volume_average"] = f.volume.shift(1).rolling(
+        RVOL_LENGTH, min_periods=RVOL_LENGTH
+    ).mean()
+    f["rvol"] = f.volume / f.volume_average.replace(0, np.nan)
+
+    # Crypto VWAP resets at 00:00 UTC. A full session needs up to 288 5m bars;
+    # the caller requests 320 so the current UTC session is represented fully.
     f["vwap"] = np.nan
     session_date = f.timestamp.iloc[-1].date()
-    mask = f.timestamp.dt.date == session_date
-    f.loc[mask, "vwap"] = vwap(f.loc[mask])
-    f["volume_base"] = f.volume.shift(1).rolling(20, min_periods=15).mean()
-    f["rvol"] = f.volume / f.volume_base.replace(0, np.nan)
-    f["atr_base"] = f.atr.shift(1).rolling(20, min_periods=15).mean()
-    f["atr_expansion"] = f.atr / f.atr_base.replace(0, np.nan)
-    f["roc3"] = f.close.pct_change(3) * 100.0
-    fast = f.close.ewm(span=12, adjust=False, min_periods=12).mean()
-    slow = f.close.ewm(span=26, adjust=False, min_periods=26).mean()
-    macd_line = fast - slow
-    signal = macd_line.ewm(span=9, adjust=False, min_periods=9).mean()
-    f["macd_hist"] = macd_line - signal
-    f["bb_mid"] = f.close.rolling(20, min_periods=20).mean()
-    f["bb_std"] = f.close.rolling(20, min_periods=20).std(ddof=0)
-    f["bb_width"] = (4 * f.bb_std) / f.bb_mid.replace(0, np.nan)
+    session_mask = f.timestamp.dt.date == session_date
+    session = f.loc[session_mask]
+    if not session.empty:
+        f.loc[session_mask, "vwap"] = vwap(session)
+    f["vwap_session_bars"] = 0
+    f.loc[session_mask, "vwap_session_bars"] = np.arange(1, len(session) + 1)
     return f
 
 
-def _risk(f, side, reference, atr_value):
-    recent = f.iloc[-5:]
+def _risk(frame, side, reference, atr_value):
+    recent = frame.iloc[-5:]
     buffer = 0.15 * atr_value
-    stop = float(recent.low.min()) - buffer if side == "LONG" else float(recent.high.max()) + buffer
-    risk = (reference - stop) if side == "LONG" else (stop - reference)
+    stop = (
+        float(recent.low.min()) - buffer if side == "LONG"
+        else float(recent.high.max()) + buffer
+    )
+    risk = reference - stop if side == "LONG" else stop - reference
     risk_atr = risk / atr_value if atr_value > 0 else float("inf")
     if not math.isfinite(risk) or risk <= 0 or risk_atr > 3.0:
         return None
-    target = reference + LIVE_TARGET_R_MULTIPLE * risk if side == "LONG" else reference - LIVE_TARGET_R_MULTIPLE * risk
+    target = (
+        reference + LIVE_TARGET_R_MULTIPLE * risk if side == "LONG"
+        else reference - LIVE_TARGET_R_MULTIPLE * risk
+    )
     return {"stop_loss": stop, "take_profit_1": target, "risk_distance_atr": risk_atr}
 
 
-def _base_result(f, side, strategy, reason, trigger_price, reference, atr_value, extra, diagnostics=None):
-    risk = _risk(f, side, reference, atr_value)
-    if risk is None:
-        return _reject(diagnostics, "risk", "structural_risk_out_of_bounds", {"atr": atr_value, "reference": reference})
-    candle = f.iloc[-1]
-    return {
-        "strategy": strategy, "side": side,
-        "entry_reference": float(reference), "trigger_price": float(trigger_price),
-        "stop_loss": risk["stop_loss"], "take_profit_1": risk["take_profit_1"],
-        "atr": float(atr_value), "risk_distance_atr": round(risk["risk_distance_atr"], 4),
-        "reason": reason, "candle_time": candle.timestamp,
-        "indicators": extra,
-    }
+def evaluate_mex(frame, *, adx_min=ADX_MIN_DEFAULT, min_rvol=1.50,
+                 min_atr_expansion=None, diagnostics=None):
+    """Return a MEX V2 setup only on a completed TTM squeeze-release breakout.
 
-
-def evaluate_mex(frame, *, adx_min=None, min_rvol=1.50,
-                 min_atr_expansion=1.15, diagnostics=None):
-    """Detect one genuine 5m momentum explosion; no squeeze or continuation paths.
-
-    Hard gates focus on participation, volatility expansion, directional
-    displacement and candle quality. EMA/DI/RSI/VWAP are a small context score,
-    not a unanimous checklist, so one lagging indicator cannot veto an impulse.
+    min_atr_expansion is accepted for backward compatibility but intentionally
+    unused: ATR expansion is not a fifth signal filter in the agreed design.
+    ATR is used only to normalize the structural stop.
     """
     f = _frame(frame, diagnostics)
     if f is None:
         return None
     f = _indicators(f)
     c, p = f.iloc[-1], f.iloc[-2]
-    prior_atr = _finite(p.atr)
-    vals = [c.atr, c.ema9, c.ema21, c.rsi, c.plus_di, c.minus_di,
-            c.rvol, c.atr_expansion, c.roc3, prior_atr]
-    if any(_finite(x) is None for x in vals) or float(c.atr) <= 0 or prior_atr <= 0:
+
+    required_values = (
+        c.atr, c.adx, c.plus_di, c.minus_di, c.rvol, c.vwap,
+        c.ttm_momentum, p.ttm_momentum, c.vwap_session_bars,
+    )
+    if any(_finite(value) is None for value in required_values) or float(c.atr) <= 0:
         return _reject(
             diagnostics, "indicators", "indicator_warmup_or_invalid",
-            {"atr": c.atr, "prior_atr": prior_atr, "rvol": c.rvol,
-             "atr_expansion": c.atr_expansion},
+            {"atr": c.atr, "adx": c.adx, "rvol": c.rvol,
+             "vwap": c.vwap, "ttm_momentum": c.ttm_momentum},
         )
 
-    if float(c.rvol) < min_rvol or float(c.atr_expansion) < min_atr_expansion:
-        failed = [
-            name for name, passed in (
-                ("rvol", float(c.rvol) >= min_rvol),
-                ("atr_expansion", float(c.atr_expansion) >= min_atr_expansion),
-            ) if not passed
-        ]
+    if not bool(c.squeeze_release):
         return _reject(
-            diagnostics, "participation_and_expansion", "volume_or_atr_expansion_below_minimum",
-            {"failed_filters": failed, "rvol": c.rvol, "min_rvol": min_rvol,
-             "atr_expansion": c.atr_expansion, "min_atr_expansion": min_atr_expansion},
+            diagnostics, "squeeze", "ttm_squeeze_not_released",
+            {"squeeze_previous": bool(p.squeeze_on),
+             "squeeze_current": bool(c.squeeze_on)},
         )
 
-    # Direction must be present in both the impulse candle and its recent
-    # three-candle displacement. This avoids classifying a large wick as trend.
-    if c.close > c.open and c.close > p.close and float(c.roc3) > 0:
+    if float(c.rvol) < float(min_rvol):
+        return _reject(
+            diagnostics, "rvol", "relative_volume_below_minimum",
+            {"rvol": c.rvol, "min_rvol": min_rvol},
+        )
+
+    if float(c.adx) < float(adx_min):
+        return _reject(
+            diagnostics, "adx", "adx_below_minimum",
+            {"adx": c.adx, "adx_min": adx_min},
+        )
+
+    momentum_rising = float(c.ttm_momentum) > float(p.ttm_momentum)
+    momentum_falling = float(c.ttm_momentum) < float(p.ttm_momentum)
+    if (float(c.ttm_momentum) > 0 and momentum_rising
+            and float(c.plus_di) > float(c.minus_di)
+            and float(c.close) > float(c.vwap)):
         side = "LONG"
-        sign = 1.0
-    elif c.close < c.open and c.close < p.close and float(c.roc3) < 0:
+    elif (float(c.ttm_momentum) < 0 and momentum_falling
+            and float(c.minus_di) > float(c.plus_di)
+            and float(c.close) < float(c.vwap)):
         side = "SHORT"
-        sign = -1.0
     else:
         return _reject(
-            diagnostics, "direction", "no_aligned_directional_impulse",
-            {"open": c.open, "close": c.close, "previous_close": p.close, "roc3": c.roc3},
+            diagnostics, "direction", "four_indicator_direction_not_aligned",
+            {"ttm_momentum": c.ttm_momentum, "momentum_previous": p.ttm_momentum,
+             "plus_di": c.plus_di, "minus_di": c.minus_di,
+             "close": c.close, "vwap": c.vwap},
         )
 
-    # Normalize the current candle against ATR known before this candle.
-    candle_range_atr = (float(c.high) - float(c.low)) / prior_atr
-    candle_body_atr = abs(float(c.close) - float(c.open)) / prior_atr
-    impulse_atr = sign * (float(c.close) - float(p.close)) / prior_atr
-    roc_atr = sign * (float(c.close) - float(f.close.iloc[-4])) / prior_atr
-    if (candle_range_atr < 0.90 or candle_body_atr < 0.45
-            or impulse_atr < 0.55 or roc_atr < 0.65):
+    prior = f.iloc[-(BREAKOUT_LOOKBACK + 1):-1]
+    prior_high = float(prior.high.max())
+    prior_low = float(prior.low.min())
+    if side == "LONG" and float(c.close) <= prior_high:
         return _reject(
-            diagnostics, "impulse_strength", "candle_or_price_acceleration_too_weak",
-            {"range_atr": candle_range_atr, "body_atr": candle_body_atr,
-             "impulse_atr": impulse_atr, "roc3_atr": roc_atr},
+            diagnostics, "structure", "breakout_close_not_above_range",
+            {"close": c.close, "range_high": prior_high},
         )
-
-    # A real explosion must take out a recent local extreme, not just print a
-    # high-volume candle in the middle of a range.
-    prior = f.iloc[-9:-1]
-    structure_break = (
-        float(c.close) > float(prior.high.max()) if side == "LONG"
-        else float(c.close) < float(prior.low.min())
-    )
-    if not structure_break:
+    if side == "SHORT" and float(c.close) >= prior_low:
         return _reject(
-            diagnostics, "structure", "recent_structure_not_broken",
-            {"side": side, "close": c.close,
-             "prior_8_high": float(prior.high.max()),
-             "prior_8_low": float(prior.low.min())},
+            diagnostics, "structure", "breakdown_close_not_below_range",
+            {"close": c.close, "range_low": prior_low},
         )
 
     quality = directional_candle_quality(
@@ -200,54 +237,54 @@ def evaluate_mex(frame, *, adx_min=None, min_rvol=1.50,
         max_opposing_wick_ratio=0.30,
     )
     if not quality["passed"]:
-        return _reject(diagnostics, "candle_quality", "directional_candle_quality_failed", {"quality": quality})
-
-    # Context is scored, not stacked as four mandatory filters. At least two
-    # of EMA alignment, DI pressure, RSI momentum and VWAP position must agree.
-    context_checks = {
-        "ema_alignment": bool(c.ema9 > c.ema21) if side == "LONG" else bool(c.ema9 < c.ema21),
-        "di_pressure": bool(c.plus_di > c.minus_di) if side == "LONG" else bool(c.minus_di > c.plus_di),
-        "rsi_momentum": bool(c.rsi >= 50) if side == "LONG" else bool(c.rsi <= 50),
-        "vwap_position": bool(c.close >= c.vwap) if side == "LONG" else bool(c.close <= c.vwap),
-    }
-    context_score = sum(context_checks.values())
-    if context_score < 2:
         return _reject(
-            diagnostics, "directional_context", "insufficient_directional_context",
-            {"context_score": context_score, "required": 2, "checks": context_checks},
-        )
-
-    extension = abs(float(c.close) - float(c.ema9)) / float(c.atr)
-    if extension > 1.50:
-        return _reject(
-            diagnostics, "entry_quality", "ema_extension_too_large",
-            {"extension_atr": extension, "max_extension_atr": 1.50},
+            diagnostics, "candle_quality", "directional_candle_quality_failed",
+            {"quality": quality},
         )
 
     reference = float(c.close)
     trigger = float(c.high) if side == "LONG" else float(c.low)
-    reason = (
-        f"MEX MOMENTUM_EXPLOSION; RVOL={float(c.rvol):.2f}, "
-        f"ATR expansion={float(c.atr_expansion):.2f}, "
-        f"impulse={impulse_atr:.2f} ATR, context={context_score}/4"
-    )
-    return _base_result(
-        f, side, "MEX", reason, trigger, reference, float(c.atr),
-        {
-            "mex_path": "MOMENTUM_EXPLOSION",
-            "rvol": round(float(c.rvol), 4),
-            "atr_expansion": round(float(c.atr_expansion), 4),
-            "rsi": round(float(c.rsi), 2),
-            "roc3": round(float(c.roc3), 4),
-            "range_atr": round(candle_range_atr, 4),
-            "body_atr": round(candle_body_atr, 4),
-            "impulse_atr": round(impulse_atr, 4),
-            "roc3_atr": round(roc_atr, 4),
-            "structure_break": True,
-            "context_score": context_score,
-            "context_checks": context_checks,
-            "extension_atr": round(extension, 4),
-            "candle_quality": quality,
-        }, diagnostics,
-    )
+    risk = _risk(f, side, reference, float(c.atr))
+    if risk is None:
+        return _reject(
+            diagnostics, "risk", "structural_risk_out_of_bounds",
+            {"atr": c.atr, "reference": reference},
+        )
 
+    indicators = {
+        "mex_version": "MEX_V2_TTM_SQUEEZE",
+        "ttm_squeeze_release": True,
+        "ttm_momentum": round(float(c.ttm_momentum), 8),
+        "ttm_momentum_previous": round(float(p.ttm_momentum), 8),
+        "rvol": round(float(c.rvol), 4),
+        "adx": round(float(c.adx), 2),
+        "adx_min": float(adx_min),
+        "plus_di": round(float(c.plus_di), 2),
+        "minus_di": round(float(c.minus_di), 2),
+        "vwap": round(float(c.vwap), 8),
+        "vwap_session_bars": int(c.vwap_session_bars),
+        "range_high": prior_high,
+        "range_low": prior_low,
+        "candle_quality": quality,
+    }
+    reason = (
+        f"MEX V2 TTM SQUEEZE RELEASE; RVOL={float(c.rvol):.2f}, "
+        f"ADX={float(c.adx):.1f}, DI={'+' if side == 'LONG' else '-'} "
+        f"direction, price {'above' if side == 'LONG' else 'below'} VWAP"
+    )
+    if diagnostics is not None:
+        diagnostics.clear()
+        diagnostics.update({
+            "stage": "accepted", "reason": "mex_v2_setup_accepted",
+            "values": indicators,
+        })
+    return {
+        "strategy": "MEX", "side": side,
+        "entry_reference": reference, "trigger_price": trigger,
+        "stop_loss": risk["stop_loss"],
+        "take_profit_1": risk["take_profit_1"],
+        "atr": float(c.atr),
+        "risk_distance_atr": round(risk["risk_distance_atr"], 4),
+        "reason": reason, "candle_time": c.timestamp,
+        "indicators": indicators,
+    }
