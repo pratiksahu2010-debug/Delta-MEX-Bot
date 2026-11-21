@@ -6,6 +6,7 @@ sizing. It returns a setup intent; SignalEngine handles live quote confirmation,
 persistence, deduplication and Telegram delivery.
 """
 import math
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -166,6 +167,12 @@ def evaluate_mex(frame, *, adx_min=ADX_MIN_DEFAULT, min_rvol=1.50,
     f = _frame(frame, diagnostics)
     if f is None:
         return None
+    # A forming live WebSocket candle must never arm a setup. The stream may
+    # still invoke this detector, but only a fully closed 5m bar is actionable.
+    latest_open = f.timestamp.iloc[-1].to_pydatetime()
+    if datetime.now(timezone.utc) < latest_open + timedelta(minutes=5):
+        return _reject(diagnostics, "candle", "latest_candle_not_closed",
+                       {"candle_time": latest_open.isoformat()})
     f = _indicators(f)
     c, p = f.iloc[-1], f.iloc[-2]
 
