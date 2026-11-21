@@ -65,13 +65,4 @@ def test_mex_requires_squeeze_release():
 
     assert result is None
     # The low-range fixture is deliberately not a breakout release.
-    assert diagnostics["reason"] in {
-        "ttm_squeeze_not_released",
-        "indicator_warmup_or_invalid",
-        "relative_volume_below_minimum",
-        "adx_below_minimum",
-        "four_indicator_direction_not_aligned",
-        "breakout_close_not_above_range",
-        "breakdown_close_not_below_range",
-        "directional_candle_quality_failed",
-    }
+    assert diagnostics["reason"] == "ttm_squeeze_not_released"
