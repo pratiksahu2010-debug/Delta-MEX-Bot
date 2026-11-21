@@ -4,7 +4,7 @@ import pandas as pd
 from app.momentum import evaluate_mex
 
 
-def test_mex_squeeze_expansion_without_structure_break_is_rejected(monkeypatch):
+def test_mex_squeeze_release_without_structure_break_is_rejected(monkeypatch):
     import app.momentum as momentum
 
     count = 80
@@ -17,7 +17,6 @@ def test_mex_squeeze_expansion_without_structure_break_is_rejected(monkeypatch):
         "close": np.full(count, 100.2),
         "volume": np.full(count, 100.0),
     })
-    # A green expansion candle, but still below the prior 10-bar high.
     frame.loc[79, ["open", "high", "low", "close", "volume"]] = [
         100.3, 100.7, 100.1, 100.5, 150.0
     ]
@@ -25,16 +24,20 @@ def test_mex_squeeze_expansion_without_structure_break_is_rejected(monkeypatch):
     def indicators(data):
         out = data.copy()
         values = {
-            "ema9": 100.4, "ema21": 100.0, "rsi": 60.0, "atr": 2.0,
-            "adx": 25.0, "plus_di": 30.0, "minus_di": 10.0,
-            "vwap": 100.0, "rvol": 1.5, "atr_expansion": 1.1,
-            "roc3": 0.2, "macd_hist": 0.2, "bb_width": 0.04,
+            "atr": 2.0, "adx": 25.0, "plus_di": 30.0, "minus_di": 10.0,
+            "vwap": 100.0, "vwap_session_bars": 80, "rvol": 1.5,
+            "ttm_momentum": 0.5,
         }
         for key, value in values.items():
             out[key] = value
-        out.loc[out.index[-21:-2], "bb_width"] = 0.03
-        out.loc[out.index[-2], "bb_width"] = 0.02
+        out.loc[out.index[-2], "ttm_momentum"] = 0.4
+        out["squeeze_on"] = False
+        out.loc[out.index[-2], "squeeze_on"] = True
+        out["squeeze_release"] = False
+        out.loc[out.index[-1], "squeeze_release"] = True
         return out
 
     monkeypatch.setattr(momentum, "_indicators", indicators)
-    assert evaluate_mex(frame) is None
+    diagnostics = {}
+    assert evaluate_mex(frame, diagnostics=diagnostics) is None
+    assert diagnostics["reason"] == "breakout_close_not_above_range"

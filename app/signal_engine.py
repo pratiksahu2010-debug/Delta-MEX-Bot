@@ -88,8 +88,8 @@ class SignalEngine:
                 "rejections": 0, "rejections_by_reason": {},
                 "detail_counts": {}, "recent_rejections": [], "last_rejection": None,
                 "last_rejection_by_reason": {},
-                "mex_gate_counts": {"evaluated": 0, "rvol_pass": 0, "rvol_fail": 0,
-                                    "atr_expansion_pass": 0, "atr_expansion_fail": 0},
+                "mex_gate_counts": {"evaluated": 0, "squeeze_pass": 0, "squeeze_fail": 0,
+                                    "rvol_pass": 0, "rvol_fail": 0, "adx_pass": 0, "adx_fail": 0},
                 "mex_evaluation_sources": {
                     "live_forming": {"evaluations": 0, "unique_symbol_candles": 0,
                                      "setups": 0, "rejections": 0},
@@ -427,12 +427,12 @@ class SignalEngine:
         if result:
             if strategy == "MEX":
                 gates = self.strategy_diagnostics[strategy].setdefault("mex_gate_counts", {
-                    "evaluated": 0, "rvol_pass": 0, "rvol_fail": 0,
-                    "atr_expansion_pass": 0, "atr_expansion_fail": 0,
+                    "evaluated": 0, "squeeze_pass": 0, "squeeze_fail": 0,
+                    "rvol_pass": 0, "rvol_fail": 0, "adx_pass": 0, "adx_fail": 0,
                 })
                 gates["evaluated"] += 1
-                gates["rvol_pass"] += 1
-                gates["atr_expansion_pass"] += 1
+                for gate in ("squeeze", "rvol", "adx"):
+                    gates[f"{gate}_pass"] += 1
             stats["setups_armed"] += 1
         else:
             stats["no_setup"] += 1
@@ -445,18 +445,21 @@ class SignalEngine:
             values = diagnostic.get("values", {}) if isinstance(diagnostic, dict) else {}
             if strategy == "MEX":
                 gates = summary.setdefault("mex_gate_counts", {
-                    "evaluated": 0, "rvol_pass": 0, "rvol_fail": 0,
-                    "atr_expansion_pass": 0, "atr_expansion_fail": 0,
+                    "evaluated": 0, "squeeze_pass": 0, "squeeze_fail": 0,
+                    "rvol_pass": 0, "rvol_fail": 0, "adx_pass": 0, "adx_fail": 0,
                 })
                 failed = set(values.get("failed_filters", [])) if isinstance(values, dict) else set()
-                # A detector rejection after the participation/expansion stage
-                # necessarily passed both gates. Warmup/data errors are excluded.
-                if reason != "indicator_warmup_or_invalid":
+                # Gate counters follow the ordered MEX V2 pipeline. A later-stage
+                # rejection proves all earlier gates passed.
+                stage = diagnostic.get("stage")
+                if stage not in ("history", "data_validation", "indicators", "candle"):
                     gates["evaluated"] += 1
-                    for gate in ("rvol", "atr_expansion"):
-                        passed = gate not in failed
-                        key = f"{gate}_{'pass' if passed else 'fail'}"
-                        gates[key] += 1
+                    ordered_gates = ("squeeze", "rvol", "adx")
+                    failed_gate = {"squeeze": "squeeze", "rvol": "rvol", "adx": "adx"}.get(stage)
+                    for gate in ordered_gates:
+                        outcome = "fail" if gate == failed_gate else "pass"
+                        if failed_gate is None or ordered_gates.index(gate) < ordered_gates.index(failed_gate) or gate == failed_gate:
+                            gates[f"{gate}_{outcome}"] += 1
             # Preserve bounded, numeric evidence so /status can distinguish
             # low participation from weak volatility expansion without
             # changing detector eligibility or flooding application logs.
@@ -464,7 +467,9 @@ class SignalEngine:
             for detail in values.get("failed_filters", []) if isinstance(values, dict) else []:
                 detail_counts[detail] = detail_counts.get(detail, 0) + 1
             sample_keys = (
-                "rvol", "min_rvol", "session_rvol", "atr_expansion", "min_atr_expansion",
+                "rvol", "min_rvol", "session_rvol", "squeeze_on", "squeeze_release",
+                "ttm_momentum", "ttm_momentum_previous", "adx_min", "vwap_session_bars",
+                "atr_expansion", "min_atr_expansion",
                 "live_volume_projection_factor", "failed_filters",
                 "range_width_atr", "min_range_atr", "max_range_atr",
                 "session", "session_timezone", "opening_candle_at",
@@ -569,6 +574,7 @@ class SignalEngine:
         """
         momentum_symbols = set(getattr(self.settings, "momentum_symbol_list", ()))
         if (not self._module_enabled("MEX") or symbol not in momentum_symbols or not getattr(self.settings, "mex_enabled", True)
+                or not getattr(self.settings, "mex_live_enabled", False)
                 or symbol not in self.candles):
             return
         completed = self.candles[symbol]
@@ -1117,8 +1123,8 @@ class SignalEngine:
                 momentum_specs.append((
                     "MEX",
                     lambda diagnostics: evaluate_mex(
-                        frame, min_rvol=float(getattr(self.settings, "mex_min_rvol", 1.50)),
-                        min_atr_expansion=float(getattr(self.settings, "mex_min_atr_expansion", 1.15)),
+                        frame, adx_min=float(getattr(self.settings, "adx_min", 19.0)),
+                        min_rvol=float(getattr(self.settings, "mex_min_rvol", 1.50)),
                         diagnostics=diagnostics,
                     ),
                 ))

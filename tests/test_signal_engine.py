@@ -826,15 +826,13 @@ def test_health_exposes_stale_quote_and_websocket_heartbeat(tmp_path):
     asyncio.run(engine.rest.close())
 
 
-def test_live_5m_candle_evaluates_mex_early_and_arms_once(tmp_path, monkeypatch):
+def test_live_5m_candle_does_not_arm_mex_setup(tmp_path, monkeypatch):
     from app.models import Candle
 
     async def run():
         engine, _notifier = make_engine(tmp_path)
         engine.settings.momentum_symbol_list = ["BTCUSD"]
         engine.settings.mex_enabled = True
-        engine.settings.mex_min_rvol = 1.50
-        engine.settings.mex_min_atr_expansion = 1.15
         now = datetime.now(timezone.utc)
         bucket = int(now.timestamp()) // 300 * 300
         last_completed_time = datetime.fromtimestamp(bucket - 300, timezone.utc)
@@ -850,32 +848,17 @@ def test_live_5m_candle_evaluates_mex_early_and_arms_once(tmp_path, monkeypatch)
             open=100.0, high=102.0, low=99.8, close=101.8, volume=220.0,
         )
         evaluations = []
-        def fake_evaluate(frame, **kwargs):
-            evaluations.append(frame.iloc[-1].to_dict())
-            return {
-                "side": "LONG", "trigger_price": 102.0, "entry_reference": 101.8,
-                "stop_loss": 99.0, "take_profit_1": 106.0, "atr": 2.0,
-                "reason": "live MEX test",
-            }
-        monkeypatch.setattr("app.signal_engine.evaluate_mex", fake_evaluate)
-        await engine.on_live_candle("BTCUSD", live, now)
-        assert len(evaluations) == 1
-        assert 220.0 < evaluations[0]["volume"] <= 880.0
-        assert ("BTCUSD", "MEX") in engine.momentum_pending
-
-        # A second update to the same live candle must not arm a duplicate.
-        updated = Candle(
-            timestamp=live.timestamp, open=100.0, high=102.2, low=99.8,
-            close=102.1, volume=240.0,
+        monkeypatch.setattr(
+            "app.signal_engine.evaluate_mex",
+            lambda frame, **kwargs: evaluations.append(frame.iloc[-1].to_dict()),
         )
-        await engine.on_live_candle("BTCUSD", updated, now + timedelta(seconds=1))
-        assert len(evaluations) == 1
-        assert engine.live_mex_candles["BTCUSD"].high == 102.2
-        assert engine.live_mex_candles["BTCUSD"].volume == 240.0
+        await engine.on_live_candle("BTCUSD", live, now)
+        assert evaluations == []
+        assert ("BTCUSD", "MEX") not in engine.momentum_pending
+        assert "BTCUSD" not in engine.live_mex_candles
         await engine.rest.close()
 
     asyncio.run(run())
-
 
 def test_live_mex_waits_for_contiguous_completed_history(tmp_path, monkeypatch):
     from app.models import Candle
@@ -899,7 +882,7 @@ def test_live_mex_waits_for_contiguous_completed_history(tmp_path, monkeypatch):
     asyncio.run(run())
 
 
-def test_next_live_bucket_promotes_previous_live_candle_to_history(tmp_path, monkeypatch):
+def test_live_ws_candles_are_not_promoted_into_completed_mex_history(tmp_path, monkeypatch):
     from app.models import Candle
 
     async def run():
@@ -916,24 +899,23 @@ def test_next_live_bucket_promotes_previous_live_candle_to_history(tmp_path, mon
             )
             for i in range(60)
         ]
-        monkeypatch.setattr("app.signal_engine.evaluate_mex", lambda *_args, **_kwargs: None)
         first = Candle(
             timestamp=datetime.fromtimestamp(bucket, timezone.utc),
             open=100.0, high=101.0, low=99.8, close=100.5, volume=150.0,
         )
         await engine.on_live_candle("BTCUSD", first, now)
         assert engine.candles["BTCUSD"][-1].timestamp == last_completed_time
+        assert "BTCUSD" not in engine.live_mex_candles
         second = Candle(
             timestamp=datetime.fromtimestamp(bucket + 300, timezone.utc),
             open=100.5, high=102.0, low=100.4, close=101.8, volume=180.0,
         )
         await engine.on_live_candle("BTCUSD", second, now + timedelta(minutes=5))
-        assert engine.candles["BTCUSD"][-1] == first
-        assert engine.live_mex_candles["BTCUSD"] == second
+        assert engine.candles["BTCUSD"][-1].timestamp == last_completed_time
+        assert "BTCUSD" not in engine.live_mex_candles
         await engine.rest.close()
 
     asyncio.run(run())
-
 
 def test_stream_disconnect_discards_partial_mex_candle_and_forces_recovery(tmp_path):
     from app.models import Candle
