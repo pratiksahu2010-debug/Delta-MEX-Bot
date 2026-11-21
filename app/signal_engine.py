@@ -1117,8 +1117,8 @@ class SignalEngine:
                 momentum_specs.append((
                     "MEX",
                     lambda diagnostics: evaluate_mex(
-                        frame, min_rvol=float(getattr(self.settings, "mex_min_rvol", 1.50)),
-                        min_atr_expansion=float(getattr(self.settings, "mex_min_atr_expansion", 1.15)),
+                        frame, adx_min=float(getattr(self.settings, "adx_min", 19.0)),
+                        min_rvol=float(getattr(self.settings, "mex_min_rvol", 1.50)),
                         diagnostics=diagnostics,
                     ),
                 ))
