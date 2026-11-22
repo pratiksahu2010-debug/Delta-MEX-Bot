@@ -2,96 +2,187 @@ from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
+import pytest
 
-from app.momentum import _indicators, evaluate_mex
+from app.momentum import evaluate_mex, _indicators, _wilder_atr
 
 
-def _frame(count=90, *, latest_age_minutes=10):
+def make_frame(side="LONG", count=250):
     now = datetime.now(timezone.utc)
-    start = now - timedelta(minutes=5 * (count - 1) + latest_age_minutes)
+    last_open = datetime.fromtimestamp(int(now.timestamp() // 300) * 300 - 300, timezone.utc)
+    start = last_open - timedelta(minutes=5 * (count - 1))
     rows = []
-    price = 100.0
     for i in range(count):
-        # Tight, valid bars provide a deterministic indicator warm-up fixture.
-        close = price + 0.015 * np.sin(i / 3.0)
+        stamp = start + timedelta(minutes=5 * i)
         rows.append({
-            "timestamp": start + timedelta(minutes=5 * i),
-            "open": close - 0.01,
-            "high": close + 0.10,
-            "low": close - 0.10,
-            "close": close,
-            "volume": 100.0 + (i % 7),
+            "timestamp": stamp, "open": 100.0, "high": 100.15,
+            "low": 99.85, "close": 100.0, "volume": 100.0,
         })
-        price = close
-    return pd.DataFrame(rows)
+    if side == "LONG":
+        rows[-1].update(open=100.05, high=100.60, low=100.00, close=100.50, volume=300.0)
+    elif side == "SHORT":
+        rows[-1].update(open=99.95, high=100.00, low=99.40, close=99.50, volume=300.0)
+    return pd.DataFrame(rows), last_open + timedelta(minutes=5, seconds=1)
 
 
-def test_mex_rejects_forming_candle_before_indicator_evaluation():
-    frame = _frame(latest_age_minutes=1)
+def evaluate(frame, now, **kwargs):
+    return evaluate_mex(
+        frame, now=now, quote_volume_24h_usd=250000.0,
+        min_quote_volume_usd=100000.0,
+        round_trip_taker_fee_pct=0.10, diagnostics=kwargs.pop("diagnostics", {}),
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_minimal_mex_accepts_strict_closed_candle_breakout(side):
+    frame, now = make_frame(side)
     diagnostics = {}
+    result = evaluate(frame, now, diagnostics=diagnostics)
 
-    result = evaluate_mex(frame, diagnostics=diagnostics)
+    assert result is not None, diagnostics
+    assert result["side"] == side
+    assert result["strategy"] == "MEX"
+    assert result["entry_reference"] == pytest.approx(frame.iloc[-1].close)
+    assert result["risk_reward"] == pytest.approx(2.0)
+    assert diagnostics["reason"] == "mex_candidate_accepted"
+    assert result["rvol"] == pytest.approx(3.0)
+    assert result["tr_ratio"] == pytest.approx(2.0)
 
+
+def test_wilder_atr_uses_sma_seed_then_recursive_smoothing():
+    frame, _ = make_frame("LONG")
+    atr = _wilder_atr(frame, 14)
+    assert atr.iloc[12] != atr.iloc[12]  # not enough bars before the seed
+    assert atr.iloc[13] == pytest.approx(0.30)
+    assert atr.iloc[-2] == pytest.approx(0.30)
+    expected = (13 * 0.30 + 0.60) / 14
+    assert atr.iloc[-1] == pytest.approx(expected)
+
+
+def test_rvol_uses_only_previous_twenty_completed_bars():
+    frame, now = make_frame("LONG")
+    frame.loc[frame.index[-20:], "volume"] = 100.0
+    frame.loc[frame.index[-1], "volume"] = 250.0
+    result = evaluate(frame, now)
+    assert result is not None
+    assert result["rvol"] == pytest.approx(2.5)
+
+
+def test_prior_donchian_excludes_the_trigger_candle():
+    frame, now = make_frame("LONG")
+    frame.loc[frame.index[-1], "high"] = 105.0
+    frame.loc[frame.index[-1], "close"] = 100.5
+    diagnostics = {}
+    result = evaluate_mex(
+        frame, now=now, quote_volume_24h_usd=250000.0,
+        round_trip_taker_fee_pct=0.10, diagnostics=diagnostics,
+    )
+    assert result is not None, diagnostics
+
+
+def test_rejects_fewer_than_250_bars():
+    frame, now = make_frame("LONG", count=249)
+    diagnostics = {}
+    result = evaluate_mex(frame, now=now, quote_volume_24h_usd=250000.0,
+                          round_trip_taker_fee_pct=0.10, diagnostics=diagnostics)
+    assert result is None
+    assert diagnostics["reason"] == "insufficient_closed_bars"
+
+
+def test_rejects_any_gap_inside_required_250_bar_window():
+    frame, now = make_frame("LONG")
+    frame.loc[100:, "timestamp"] += timedelta(minutes=5)
+    diagnostics = {}
+    result = evaluate_mex(frame, now=now, quote_volume_24h_usd=250000.0,
+                          round_trip_taker_fee_pct=0.10, diagnostics=diagnostics)
+    assert result is None
+    assert diagnostics["reason"] == "gap_in_required_250_bars"
+
+
+def test_rejects_forming_latest_bar():
+    frame, _ = make_frame("LONG")
+    diagnostics = {}
+    result = evaluate_mex(
+        frame, now=frame.iloc[-1].timestamp.to_pydatetime() + timedelta(minutes=4),
+        quote_volume_24h_usd=250000.0, round_trip_taker_fee_pct=0.10,
+        diagnostics=diagnostics,
+    )
     assert result is None
     assert diagnostics["reason"] == "latest_candle_not_closed"
 
 
-def test_ttm_squeeze_columns_and_release_state_are_calculated():
-    frame = _frame()
-    indicators = _indicators(frame)
+def test_rvol_is_first_trigger_gate_after_breakout():
+    frame, now = make_frame("LONG")
+    frame.loc[frame.index[-1], "volume"] = 199.0
+    diagnostics = {}
+    result = evaluate(frame, now, diagnostics=diagnostics)
+    assert result is None
+    assert diagnostics["reason"] == "rvol_below_minimum"
 
-    for column in (
-        "bb_upper", "bb_lower", "bb_width", "kc_upper", "kc_lower",
-        "kc_width", "squeeze_ratio", "squeeze_on", "squeeze_release",
-        "ttm_momentum", "rvol", "volume_average", "adx", "plus_di",
-        "minus_di", "vwap", "vwap_session_volume",
-    ):
-        assert column in indicators.columns
 
-    expected_release = (
-        indicators["squeeze_on"].shift(1, fill_value=False)
-        & ~indicators["squeeze_on"]
+def test_tr_ratio_is_first_trigger_gate_after_breakout():
+    frame, now = make_frame("LONG")
+    frame.loc[frame.index[-1], ["high", "low", "close"]] = [100.45, 100.0, 100.4]
+    diagnostics = {}
+    result = evaluate(frame, now, diagnostics=diagnostics)
+    assert result is None
+    assert diagnostics["reason"] == "tr_ratio_below_minimum"
+
+
+def test_close_location_gate_rejects_weak_breakout_close():
+    frame, now = make_frame("LONG")
+    frame.loc[frame.index[-1], ["open", "high", "low", "close"]] = [100.05, 100.6, 99.9, 100.35]
+    diagnostics = {}
+    result = evaluate(frame, now, diagnostics=diagnostics)
+    assert result is None
+    assert diagnostics["reason"] == "close_location_not_strong_long"
+
+
+def test_extension_gate_rejects_chasing_extended_bar():
+    frame, now = make_frame("LONG")
+    frame.loc[frame.index[-1], ["open", "high", "low", "close"]] = [100.5, 102.0, 100.4, 101.9]
+    diagnostics = {}
+    result = evaluate(frame, now, diagnostics=diagnostics)
+    assert result is None
+    assert diagnostics["reason"] == "entry_extension_exceeded"
+
+
+def test_cost_gate_rejects_atr_below_three_times_round_trip_fee():
+    frame, now = make_frame("LONG")
+    frame.loc[:, ["high", "low"]] = [100.02, 99.98]
+    frame.loc[frame.index[-1], ["open", "high", "low", "close"]] = [100.01, 100.12, 100.0, 100.10]
+    diagnostics = {}
+    result = evaluate(frame, now, diagnostics=diagnostics)
+    assert result is None
+    assert diagnostics["reason"] == "atr_below_cost_floor"
+
+
+def test_liquidity_gate_fails_closed_when_24h_turnover_missing_or_low():
+    frame, now = make_frame("LONG")
+    diagnostics = {}
+    result = evaluate_mex(
+        frame, now=now, quote_volume_24h_usd=None,
+        round_trip_taker_fee_pct=0.10, diagnostics=diagnostics,
     )
-    pd.testing.assert_series_equal(
-        indicators["squeeze_release"], expected_release,
-        check_names=False,
-    )
-
-
-def test_mex_requires_squeeze_release():
-    frame = _frame()
-    diagnostics = {}
-
-    result = evaluate_mex(frame, adx_min=19, min_rvol=1.5, diagnostics=diagnostics)
-
     assert result is None
-    # The low-range fixture is deliberately not a breakout release.
-    assert diagnostics["reason"] == "ttm_squeeze_not_released"
+    assert diagnostics["reason"] == "quote_volume_24h_below_minimum"
 
 
+def test_stop_is_never_tighter_than_0_8_atr_and_targets_are_1r_2r():
+    frame, now = make_frame("LONG")
+    result = evaluate(frame, now)
+    assert result is not None
+    risk = result["entry_reference"] - result["stop_loss"]
+    assert risk >= 0.8 * result["atr"]
+    assert result["take_profit_1"] == pytest.approx(result["entry_reference"] + risk)
+    assert result["take_profit_2"] == pytest.approx(result["entry_reference"] + 2 * risk)
 
-def test_zero_rvol_baseline_has_specific_diagnostic():
-    frame = _frame()
-    # The current candle trades, but the preceding 20 completed candles have
-    # zero volume. This is not an ADX or squeeze failure.
-    frame.loc[frame.index[-21:-1], "volume"] = 0.0
+
+def test_only_the_first_failed_gate_is_reported():
+    frame, now = make_frame("LONG")
+    frame.loc[frame.index[-1], "volume"] = 100.0
     diagnostics = {}
-
-    result = evaluate_mex(frame, adx_min=19, min_rvol=1.5, diagnostics=diagnostics)
-
+    result = evaluate(frame, now, diagnostics=diagnostics)
     assert result is None
-    assert diagnostics["reason"] == "rvol_zero_or_missing_volume_baseline"
-    assert diagnostics["values"]["current_volume"] > 0
-    assert diagnostics["values"]["volume_average_previous_20"] == 0.0
-
-
-def test_squeeze_rejection_reports_compression_ratios():
-    frame = _frame()
-    diagnostics = {}
-
-    result = evaluate_mex(frame, diagnostics=diagnostics)
-
-    assert result is None
-    assert diagnostics["reason"] == "ttm_squeeze_not_released"
-    assert "squeeze_ratio_previous" in diagnostics["values"]
-    assert "squeeze_ratio_current" in diagnostics["values"]
+    assert diagnostics["reason"] == "rvol_below_minimum"
