@@ -97,7 +97,7 @@ def test_mex_global_hourly_cap_is_five_across_all_symbols(tmp_path):
 
 def test_mex_duplicate_signal_cannot_be_queued_twice(tmp_path):
     store = SignalStore(str(tmp_path / "mex.sqlite3"))
-    now = datetime(2026, 11, 22, 10, 0, tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
     stamp = (now - timedelta(minutes=5)).isoformat()
     key = f"BTCUSD:{stamp}"
     assert store.claim_mex_signal(
