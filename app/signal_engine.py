@@ -1129,6 +1129,50 @@ class SignalEngine:
                 "low": b.low, "close": b.close, "volume": b.volume,
             } for b in bars])
 
+            # Evaluate V3 on every fresh completed MEX candle, even when V2
+            # already has a pending setup. This is diagnostic-only and isolated
+            # so a V3 exception cannot affect the live V2 decision path.
+            if (self._module_enabled("MEX") and symbol in getattr(self.settings, "momentum_symbol_list", ())
+                    and getattr(self.settings, "mex_enabled", True)):
+                shadow_diagnostics = {}
+                shadow = self.mex_v3_shadow_diagnostics
+                shadow["evaluated"] += 1
+                try:
+                    shadow_result = evaluate_mex_v3_shadow(
+                        frame,
+                        adx_min=float(getattr(self.settings, "adx_min", 19.0)),
+                        min_rvol=float(getattr(self.settings, "mex_min_rvol", 1.50)),
+                        diagnostics=shadow_diagnostics,
+                    )
+                    shadow["last_evaluation"] = {
+                        "symbol": symbol,
+                        "candle_at": latest.timestamp.isoformat(),
+                        "stage": shadow_diagnostics.get("stage"),
+                        "reason": shadow_diagnostics.get("reason"),
+                        "side": shadow_result.get("side") if shadow_result else None,
+                        "values": shadow_diagnostics.get("values", {}),
+                    }
+                    if shadow_result:
+                        shadow["candidates"] += 1
+                        shadow["recent_candidates"].append(shadow["last_evaluation"])
+                        shadow["recent_candidates"] = shadow["recent_candidates"][-20:]
+                    else:
+                        shadow["rejections"] += 1
+                        reason = shadow_diagnostics.get("reason", "unclassified")
+                        counts = shadow["rejections_by_reason"]
+                        counts[reason] = counts.get(reason, 0) + 1
+                except Exception as shadow_exc:
+                    shadow["errors"] += 1
+                    shadow["last_evaluation"] = {
+                        "symbol": symbol,
+                        "candle_at": latest.timestamp.isoformat(),
+                        "stage": "shadow_error",
+                        "reason": f"{type(shadow_exc).__name__}: {str(shadow_exc)[:160]}",
+                        "side": None,
+                        "values": {},
+                    }
+                    log.exception("MEX V3 shadow evaluation failed symbol=%s", symbol)
+
             momentum_specs = []
             if (self._module_enabled("MEX") and symbol in getattr(self.settings, "momentum_symbol_list", ())
                     and getattr(self.settings, "mex_enabled", True)):
@@ -1163,47 +1207,6 @@ class SignalEngine:
                 result = evaluator(diagnostics)
                 if strategy == "MEX":
                     diagnostics["evaluation_source"] = "completed_candle"
-                    # MEX V3 is measurement-only. It cannot arm a setup, touch
-                    # pending state, or enqueue a Telegram alert.
-                    shadow_diagnostics = {}
-                    shadow = self.mex_v3_shadow_diagnostics
-                    shadow["evaluated"] += 1
-                    try:
-                        shadow_result = evaluate_mex_v3_shadow(
-                            frame,
-                            adx_min=float(getattr(self.settings, "adx_min", 19.0)),
-                            min_rvol=float(getattr(self.settings, "mex_min_rvol", 1.50)),
-                            diagnostics=shadow_diagnostics,
-                        )
-                        shadow["last_evaluation"] = {
-                            "symbol": symbol,
-                            "candle_at": latest.timestamp.isoformat(),
-                            "stage": shadow_diagnostics.get("stage"),
-                            "reason": shadow_diagnostics.get("reason"),
-                            "side": shadow_result.get("side") if shadow_result else None,
-                            "values": shadow_diagnostics.get("values", {}),
-                        }
-                        if shadow_result:
-                            shadow["candidates"] += 1
-                            shadow["recent_candidates"].append(shadow["last_evaluation"])
-                            shadow["recent_candidates"] = shadow["recent_candidates"][-20:]
-                        else:
-                            shadow["rejections"] += 1
-                            reason = shadow_diagnostics.get("reason", "unclassified")
-                            counts = shadow["rejections_by_reason"]
-                            counts[reason] = counts.get(reason, 0) + 1
-                    except Exception as shadow_exc:
-                        # A shadow-only failure must never suppress or alter MEX V2.
-                        shadow["errors"] += 1
-                        shadow["last_evaluation"] = {
-                            "symbol": symbol,
-                            "candle_at": latest.timestamp.isoformat(),
-                            "stage": "shadow_error",
-                            "reason": f"{type(shadow_exc).__name__}: {str(shadow_exc)[:160]}",
-                            "side": None,
-                            "values": {},
-                        }
-                        log.exception("MEX V3 shadow evaluation failed symbol=%s", symbol)
                 self._record_strategy_evaluation(strategy, latest, result, symbol, diagnostics)
                 if result:
                     self._arm_setup(symbol, strategy, result, latest)
