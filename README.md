@@ -69,6 +69,8 @@ After the week, review:
 4. Net expectancy after round-trip taker fees and realistic slippage, not win rate alone.
 5. Signal frequency, cooldown behavior, and the global hourly cap.
 
+For a historically valid liquidity-gate backtest, the CSV must include a time-aligned `quote_volume_24h_usd` value for each candle. Delta's historical candle endpoint supplies OHLCV, while `turnover_usd` is available from live tickers; reusing today's ticker turnover for old candles would introduce look-ahead bias. The detector replay script therefore fails the liquidity gate when the historical quote-volume field is absent. It is not a P&L backtest and must not be presented as expectancy.
+
 Only after that review should `MEX_LOG_ONLY=false` be set to enable Telegram delivery. Signal-only safety remains mandatory: `SIGNAL_ONLY=true`, `ORDERS_ENABLED=false`.
 
 ## Optional squeeze-release path
