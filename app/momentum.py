@@ -72,6 +72,8 @@ def _prepare_frame(frame, now=None, diagnostics=None):
         return _reject(diagnostics, "data", "invalid_timestamp_or_ohlcv")
     if not np.isfinite(f[fields].to_numpy(dtype=float)).all():
         return _reject(diagnostics, "data", "non_finite_ohlcv")
+    if (f[["open", "high", "low", "close"]] <= 0).any().any():
+        return _reject(diagnostics, "data", "non_positive_ohlc")
     f = f.sort_values("timestamp").reset_index(drop=True)
     if f["timestamp"].duplicated().any() or (f["volume"] < 0).any():
         return _reject(diagnostics, "data", "duplicate_timestamps_or_negative_volume")
@@ -145,6 +147,10 @@ def evaluate_mex(
         return None
     x = _indicators(f)
     c, p = x.iloc[-1], x.iloc[-2]
+    if float(c["high"]) <= float(c["low"]):
+        return _reject(diagnostics, "data", "zero_range_trigger_candle",
+                       {"high": float(c["high"]), "low": float(c["low"]),
+                        "volume": float(c["volume"])})
     def diagnostic_values(extra):
         return _values(c, {
             "quote_volume_24h_usd": _round_or_none(quote_volume_24h_usd),
