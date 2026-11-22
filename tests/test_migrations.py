@@ -82,6 +82,9 @@ def test_versioned_migrations_adopt_legacy_sqlite_tables_without_data_loss(tmp_p
         feedback_token_columns = {row[1] for row in db.execute("PRAGMA table_info(signal_feedback_tokens)")}
         lifecycle_current_exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='setup_lifecycle_current'").fetchone()
         lifecycle_events_exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='setup_lifecycle_events'").fetchone()
+        mex_state_exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mex_symbol_state'").fetchone()
+        mex_events_exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mex_signal_events'").fetchone()
+        mex_state_events_exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mex_state_events'").fetchone()
         signal_outcomes_exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='signal_outcomes'").fetchone()
         ml_tables = {
             row[0] for row in db.execute(
@@ -119,6 +122,9 @@ def test_versioned_migrations_adopt_legacy_sqlite_tables_without_data_loss(tmp_p
     assert ml_tables == {"ml_feature_snapshots", "ml_market_labels", "ml_training_runs", "ml_models", "ml_predictions", "ml_feedback_labels"}
     assert lifecycle_current_exists is not None
     assert lifecycle_events_exists is not None
+    assert mex_state_exists is not None
+    assert mex_events_exists is not None
+    assert mex_state_events_exists is not None
     assert outbox_count == 1
     assert journal_count == 2
     assert outcome_backfill == ("pending", 100.5, 98.5, 103.5, 104.5, 1.2)
