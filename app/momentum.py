@@ -171,10 +171,10 @@ def evaluate_mex(
                            _values(c, {}))
         side = "LONG"
     elif entry < float(c["donchian_low_prior"]):
-        if float(c["tr_ratio"]) < min_tr_ratio:
+        if float(c["tr_ratio"]) + 1e-9 < min_tr_ratio:
             return _reject(diagnostics, "trigger", "tr_ratio_below_minimum",
                            _values(c, {"min_tr_ratio": min_tr_ratio}))
-        if float(c["rvol"]) < min_rvol:
+        if float(c["rvol"]) + 1e-9 < min_rvol:
             return _reject(diagnostics, "trigger", "rvol_below_minimum",
                            _values(c, {"min_rvol": min_rvol}))
         if close_location - 1e-9 > MAX_CLOSE_LOCATION_SHORT:
