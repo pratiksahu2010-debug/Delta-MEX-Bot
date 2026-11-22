@@ -140,7 +140,7 @@ def test_zero_current_volume_fails_rvol_gate_not_indicator_warmup():
 
 def test_tr_ratio_is_first_trigger_gate_after_breakout():
     frame, now = make_frame("LONG")
-    frame.loc[frame.index[-1], ["high", "low", "close"]] = [100.45, 100.0, 100.4]
+    frame.loc[frame.index[-1], ["high", "low", "close"]] = [100.42, 100.0, 100.38]
     diagnostics = {}
     result = evaluate(frame, now, diagnostics=diagnostics)
     assert result is None
