@@ -319,6 +319,35 @@ def evaluate_mex_v3_shadow(
     if not quality["passed"]:
         return _reject(diagnostics, "candle_quality", "shadow_candle_quality_failed", values)
 
+    # Match the live MEX structural stop policy for comparable forward outcomes.
+    reference = float(c.close)
+    atr_value = float(c.atr20)
+    recent = x.iloc[-5:]
+    stop = (
+        float(recent.low.min()) - 0.15 * atr_value if side == "LONG"
+        else float(recent.high.max()) + 0.15 * atr_value
+    )
+    risk = reference - stop if side == "LONG" else stop - reference
+    risk_atr = risk / atr_value if atr_value > 0 else float("inf")
+    if not math.isfinite(risk) or risk <= 0 or risk_atr > 3.0:
+        values.update({"entry_reference": reference, "stop_loss": stop,
+                       "risk_distance_atr": risk_atr})
+        return _reject(diagnostics, "risk", "shadow_structural_risk_out_of_bounds", values)
+    target = (
+        reference + 2.0 * risk if side == "LONG"
+        else reference - 2.0 * risk
+    )
+    trigger = float(c.high) if side == "LONG" else float(c.low)
+    values.update({
+        "entry_reference": reference,
+        "trigger_price": trigger,
+        "stop_loss": stop,
+        "take_profit_1": target,
+        "atr": atr_value,
+        "risk_distance_atr": risk_atr,
+        "entry_model": "release_candle_close_shadow_without_quote_confirmation",
+    })
+
     if diagnostics is not None:
         diagnostics.clear()
         diagnostics.update({
@@ -326,4 +355,8 @@ def evaluate_mex_v3_shadow(
             "reason": "mex_v3_shadow_candidate",
             "values": values,
         })
-    return {"strategy": "MEX_V3_SHADOW", "side": side, "values": values}
+    return {
+        "strategy": "MEX_V3_SHADOW", "side": side, "values": values,
+        "entry_reference": reference, "trigger_price": trigger,
+        "stop_loss": stop, "take_profit_1": target, "atr": atr_value,
+    }
