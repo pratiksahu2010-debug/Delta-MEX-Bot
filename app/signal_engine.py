@@ -299,6 +299,8 @@ class SignalEngine:
         """
         now = datetime.now(timezone.utc)
         restored = expired = invalid = 0
+        if self._module_enabled("MEX") and bool(getattr(self.settings, "mex_log_only", True)):
+            self.mex_runtime["suppressed_legacy_outbox"] = self.store.suppress_pending_mex_alerts()
         for symbol, strategy, payload in self.store.load_pending_setups():
             try:
                 if strategy in ("NORMAL", "MEX"):
