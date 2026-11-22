@@ -1251,7 +1251,7 @@ class SignalEngine:
                     if not claimed:
                         diagnostics["stage"] = "state"
                         diagnostics["reason"] = claim_reason
-                        diagnostics.setdefault("values", {})["candidate"] = result["indicators"]
+                        diagnostics.setdefault("values", {})["candidate"] = dict(result.get("indicators") or {})
                         counts = self.mex_runtime["state_rejections"]
                         counts[claim_reason] = counts.get(claim_reason, 0) + 1
                         self._record_strategy_evaluation("MEX", latest, None, symbol, diagnostics)
