@@ -38,7 +38,7 @@ def _engine(tmp_path, log_only):
         state_db_path=str(tmp_path / "mex-engine.sqlite3"),
         symbol_list=["BTCUSD"], momentum_symbol_list=["BTCUSD"],
         tpr_rb_symbol_list=[], bot_module="MEX", mex_enabled=True,
-        mex_log_only=log_only, mex_min_rvol=2.0, mex_min_tr_ratio=2.0,
+        mex_log_only=log_only, mex_min_rvol=1.5, mex_min_tr_ratio=2.0,
         mex_min_24h_quote_volume_usd=100000.0,
         mex_round_trip_taker_fee_pct=0.10,
         candle_poll_interval_seconds=0.0, max_candle_lag_seconds=600,
