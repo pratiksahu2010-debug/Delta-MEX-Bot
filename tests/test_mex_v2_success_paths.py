@@ -7,25 +7,26 @@ import app.momentum as momentum
 
 
 def _closed_breakout_frame(side: str) -> pd.DataFrame:
-    """A valid, closed 5m breakout with a narrow prior range."""
+    """A valid, closed 5m breakout with a narrow prior range and structural stop."""
     now = datetime.now(timezone.utc)
     start = now - timedelta(minutes=5 * 59 + 10)
+    base = 102.0 if side == "LONG" else 98.0
     rows = []
     for index in range(60):
         stamp = start + timedelta(minutes=5 * index)
         rows.append({
             "timestamp": stamp,
-            "open": 100.0,
-            "high": 100.2,
-            "low": 99.8,
-            "close": 100.0,
+            "open": base,
+            "high": base + 0.2,
+            "low": base - 0.2,
+            "close": base,
             "volume": 100.0,
         })
 
     if side == "LONG":
-        rows[-1].update(open=101.0, high=103.0, low=100.8, close=102.8)
+        rows[-1].update(open=102.1, high=103.0, low=102.05, close=102.8)
     else:
-        rows[-1].update(open=99.0, high=99.2, low=97.0, close=97.2)
+        rows[-1].update(open=97.9, high=97.95, low=96.8, close=97.0)
     return pd.DataFrame(rows)
 
 
@@ -50,13 +51,13 @@ def _install_indicators(monkeypatch, frame, side: str, *, adx_value=19.0, rvol=1
         enriched.loc[enriched.index[-1], "ttm_momentum"] = 1.0
         enriched["plus_di"] = 30.0
         enriched["minus_di"] = 10.0
-        enriched["vwap"] = 101.0
+        enriched["vwap"] = 102.4
     else:
         enriched.loc[enriched.index[-2], "ttm_momentum"] = -0.5
         enriched.loc[enriched.index[-1], "ttm_momentum"] = -1.0
         enriched["plus_di"] = 10.0
         enriched["minus_di"] = 30.0
-        enriched["vwap"] = 99.0
+        enriched["vwap"] = 97.5
 
     enriched.loc[enriched.index[-2], "squeeze_on"] = True
     enriched.loc[enriched.index[-1], "squeeze_release"] = True
