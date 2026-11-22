@@ -239,7 +239,7 @@ def evaluate_mex(
 
     values = diagnostic_values({
         "side": side, "entry": entry, "stop_loss": stop, "tp1": tp1, "tp2": tp2,
-        "risk_reward_tp2_net": rr, "quote_volume_24h_usd": turnover,
+        "risk_reward_tp2": rr, "quote_volume_24h_usd": turnover,
         "round_trip_taker_fee_pct": fee_pct,
         "extension_atr": extension_atr,
         "min_quote_volume_usd": min_quote_volume_usd,
