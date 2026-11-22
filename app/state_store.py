@@ -4,6 +4,7 @@ PostgreSQL is selected when DATABASE_URL is configured (Render production).
 SQLite remains available for local development and tests.
 """
 import json
+import math
 import secrets
 import sqlite3
 from pathlib import Path
@@ -75,7 +76,8 @@ class SignalStore:
             db.execute(sql, (signal_key, json.dumps(payload, separators=(",", ":")), now, now, now))
 
     def claim_mex_signal(self, signal_key, symbol, side, candle_time, payload, *,
-                         max_per_hour=5, cooldown_bars=12, now=None):
+                         max_per_hour=5, cooldown_bars=12, now=None,
+                         enqueue_alert=True, breakout_level=None, current_price=None):
         """Atomically enforce per-symbol cooldown/global hourly cap and enqueue Telegram."""
         now = (now or _utc_now()).astimezone(timezone.utc)
         now_text = now.isoformat()
@@ -88,6 +90,14 @@ class SignalStore:
         side = str(side).upper()
         if side not in {"LONG", "SHORT"} or max_per_hour < 1 or cooldown_bars < 1:
             raise ValueError("Invalid MEX signal claim arguments")
+        try:
+            breakout_level = float(breakout_level) if breakout_level is not None else None
+            current_price = float(current_price) if current_price is not None else None
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("Invalid MEX breakout re-arm prices")
+        if ((breakout_level is not None and not math.isfinite(breakout_level))
+                or (current_price is not None and not math.isfinite(current_price))):
+            raise ValueError("Invalid MEX breakout re-arm prices")
         ph = "?" if self.backend == "sqlite" else "%s"
 
         def event(db, old, new, reason):
@@ -106,18 +116,20 @@ class SignalStore:
                 (symbol, now_text),
             )
             lock_sql = (
-                "SELECT state,cooldown_until FROM mex_symbol_state WHERE symbol=?"
+                "SELECT state,cooldown_until,last_side,last_breakout_level FROM mex_symbol_state WHERE symbol=?"
                 if self.backend == "sqlite"
-                else "SELECT state,cooldown_until FROM mex_symbol_state WHERE symbol=%s FOR UPDATE"
+                else "SELECT state,cooldown_until,last_side,last_breakout_level FROM mex_symbol_state WHERE symbol=%s FOR UPDATE"
             )
             row = db.execute(lock_sql, (symbol,)).fetchone()
-            state, saved_cooldown = row[0], row[1]
+            state, saved_cooldown, saved_side, saved_breakout = row[0], row[1], row[2], row[3]
             if state == "COOLDOWN":
                 if saved_cooldown and candle_text < str(saved_cooldown):
                     return False, "symbol_cooldown"
+                if saved_breakout is not None:
+                    return False, "same_breakout_move"
                 db.execute(f"UPDATE mex_symbol_state SET state='IDLE',updated_at={ph} WHERE symbol={ph}",
                            (now_text, symbol))
-                event(db, "COOLDOWN", "IDLE", "cooldown_expired")
+                event(db, "COOLDOWN", "IDLE", "cooldown_expired_legacy_state")
                 state = "IDLE"
             if state != "IDLE":
                 return False, "symbol_not_idle"
@@ -136,8 +148,8 @@ class SignalStore:
             if cur.rowcount != 1:
                 return False, "duplicate_symbol_candle"
             db.execute(
-                f"UPDATE mex_symbol_state SET state='TRIGGERED',last_side={ph},last_signal_candle={ph},updated_at={ph} WHERE symbol={ph}",
-                (side, candle_text, now_text, symbol),
+                f"UPDATE mex_symbol_state SET state='TRIGGERED',last_side={ph},last_signal_candle={ph},last_breakout_level={ph},updated_at={ph} WHERE symbol={ph}",
+                (side, candle_text, breakout_level, now_text, symbol),
             )
             event(db, "IDLE", "TRIGGERED", "closed_candle_signal_claimed")
             db.execute(
@@ -154,9 +166,56 @@ class SignalStore:
                    (signal_key,payload_json,status,attempts,created_at,next_attempt_at,updated_at)
                    VALUES (%s,%s,'pending',0,%s,%s,%s) ON CONFLICT(signal_key) DO NOTHING"""
             )
-            db.execute(outbox, (signal_key, json.dumps(payload, separators=(",", ":")),
-                                now_text, now_text, now_text))
+            if enqueue_alert:
+                db.execute(outbox, (signal_key, json.dumps(payload, separators=(",", ":")),
+                                    now_text, now_text, now_text))
         return True, "accepted"
+
+    def refresh_mex_rearm(self, symbol: str, candle_time, close_price: float) -> bool:
+        """Re-arm an expired MEX cooldown only after price closes back inside its old channel."""
+        candle = datetime.fromisoformat(str(candle_time).replace("Z", "+00:00"))
+        if candle.tzinfo is None:
+            candle = candle.replace(tzinfo=timezone.utc)
+        candle = candle.astimezone(timezone.utc)
+        try:
+            close_price = float(close_price)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if not math.isfinite(close_price):
+            return False
+        candle_text = candle.isoformat()
+        now_text = _utc_now().isoformat()
+        ph = "?" if self.backend == "sqlite" else "%s"
+        with self._connect() as db:
+            if self.backend == "sqlite":
+                db.execute("BEGIN IMMEDIATE")
+            else:
+                db.execute("SELECT pg_advisory_xact_lock(%s)", (731904223,))
+            lock_sql = (
+                "SELECT state,cooldown_until,last_side,last_breakout_level FROM mex_symbol_state WHERE symbol=?"
+                if self.backend == "sqlite"
+                else "SELECT state,cooldown_until,last_side,last_breakout_level FROM mex_symbol_state WHERE symbol=%s FOR UPDATE"
+            )
+            row = db.execute(lock_sql, (symbol,)).fetchone()
+            if not row or row[0] != "COOLDOWN":
+                return False
+            _, cooldown_until, last_side, breakout_level = row
+            if cooldown_until and candle_text < str(cooldown_until):
+                return False
+            if breakout_level is not None:
+                boundary = float(breakout_level)
+                reentered = ((last_side == "LONG" and close_price <= boundary)
+                             or (last_side == "SHORT" and close_price >= boundary))
+                if not reentered:
+                    return False
+            db.execute(f"UPDATE mex_symbol_state SET state='IDLE',updated_at={ph} WHERE symbol={ph}",
+                       (now_text, symbol))
+            db.execute(
+                f"INSERT INTO mex_state_events(event_id,symbol,from_state,to_state,side,candle_time,reason,created_at) VALUES ({','.join([ph] * 8)})",
+                (secrets.token_urlsafe(18), symbol, "COOLDOWN", "IDLE", last_side,
+                 candle_text, "cooldown_expired_and_price_reentered_channel", now_text),
+            )
+            return True
 
     def suppress_pending_mex_alerts(self) -> int:
         """Prevent legacy MEX alerts from escaping during the one-week log-only phase."""
@@ -168,8 +227,8 @@ class SignalStore:
                     SET status='suppressed', last_error='MEX_LOG_ONLY: queued alert suppressed',
                         lease_until=NULL, lease_token=NULL, updated_at={ph}
                     WHERE status IN ('pending','sending')
-                      AND payload_json LIKE '%"strategy":"MEX"%'""",
-                (now,),
+                      AND payload_json LIKE {ph}""",
+                (now, '%"strategy":"MEX"%'),
             )
             return int(cur.rowcount)
 
@@ -179,7 +238,7 @@ class SignalStore:
         ph = "?" if self.backend == "sqlite" else "%s"
         with self._connect() as db:
             rows = db.execute(
-                "SELECT symbol,state,last_side,last_signal_candle,cooldown_until,updated_at FROM mex_symbol_state ORDER BY symbol"
+                "SELECT symbol,state,last_side,last_signal_candle,cooldown_until,updated_at,last_breakout_level FROM mex_symbol_state ORDER BY symbol"
             ).fetchall()
             count = db.execute(
                 f"SELECT COUNT(*) FROM mex_signal_events WHERE created_at >= {ph}", (cutoff,)
@@ -187,7 +246,7 @@ class SignalStore:
         return {
             "states": [{"symbol": r[0], "state": r[1], "last_side": r[2],
                         "last_signal_candle": r[3], "cooldown_until": r[4],
-                        "updated_at": r[5]} for r in rows],
+                        "updated_at": r[5], "last_breakout_level": r[6]} for r in rows],
             "signals_last_hour": int(count or 0), "hourly_limit": 5,
         }
 
