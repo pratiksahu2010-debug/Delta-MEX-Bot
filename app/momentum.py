@@ -147,9 +147,26 @@ def evaluate_mex(
     x = _indicators(f)
     c, p = x.iloc[-1], x.iloc[-2]
     if float(c["high"]) <= float(c["low"]):
-        return _reject(diagnostics, "data", "zero_range_trigger_candle",
-                       {"high": float(c["high"]), "low": float(c["low"]),
-                        "volume": float(c["volume"])})
+        # A zero-range candle is not a usable breakout trigger. Keep rejecting
+        # it, but distinguish exchange no-trade bars from trades executed at
+        # one price so feed quality can be diagnosed without changing strategy
+        # qualification or silently discarding bars from the contiguous history.
+        no_trade = float(c["volume"]) <= 0.0
+        return _reject(
+            diagnostics, "data",
+            "zero_range_trigger_candle",
+            {
+                "timestamp": c["timestamp"].isoformat(),
+                "open": float(c["open"]), "high": float(c["high"]),
+                "low": float(c["low"]), "close": float(c["close"]),
+                "volume": float(c["volume"]),
+                "flat_bar_class": "no_trade" if no_trade else "traded_at_one_price",
+                "previous_close": float(p["close"]),
+                "same_as_previous_close": math.isclose(
+                    float(c["close"]), float(p["close"]), rel_tol=0.0, abs_tol=1e-12
+                ),
+            },
+        )
     def diagnostic_values(extra):
         return _values(c, extra or {})
     required = (
