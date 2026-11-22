@@ -267,7 +267,8 @@ def test_mex_legacy_outbox_suppression_uses_bound_like_pattern(tmp_path, monkeyp
         def execute(self, query, params):
             captured["query"], captured["params"] = query, params
             return Cursor()
+    store.backend = "postgresql"
     monkeypatch.setattr(store, "_connect", lambda: FakeConnection())
     assert store.suppress_pending_mex_alerts() == 2
-    assert "LIKE ?" in captured["query"]
+    assert "LIKE %s" in captured["query"]
     assert captured["params"][1] == '%"strategy":"MEX"%'
