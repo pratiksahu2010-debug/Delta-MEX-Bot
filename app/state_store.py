@@ -158,6 +158,21 @@ class SignalStore:
                                 now_text, now_text, now_text))
         return True, "accepted"
 
+    def suppress_pending_mex_alerts(self) -> int:
+        """Prevent legacy MEX alerts from escaping during the one-week log-only phase."""
+        now = _utc_now().isoformat()
+        ph = "?" if self.backend == "sqlite" else "%s"
+        with self._connect() as db:
+            cur = db.execute(
+                f"""UPDATE alert_outbox
+                    SET status='suppressed', last_error='MEX_LOG_ONLY: queued alert suppressed',
+                        lease_until=NULL, lease_token=NULL, updated_at={ph}
+                    WHERE status IN ('pending','sending')
+                      AND payload_json LIKE '%"strategy":"MEX"%'""",
+                (now,),
+            )
+            return int(cur.rowcount)
+
     def mex_state(self):
         now = _utc_now()
         cutoff = (now - timedelta(hours=1)).isoformat()
