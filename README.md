@@ -24,9 +24,9 @@ Bar-derived values:
 - **TR ratio** = current bar true range / previous bar ATR(14).
 - **Close location** = (close - low) / (high - low).
 
-LONG requires all of: close above prior Donchian high, TR ratio >= 2.0, RVOL >= 1.5, close location >= 0.75, and close above EMA21.
+LONG requires all of: close above prior Donchian high, TR ratio >= 1.5, RVOL >= 1.5, close location >= 0.75, and close above EMA21.
 
-SHORT requires all of: close below prior Donchian low, TR ratio >= 2.0, RVOL >= 1.5, close location <= 0.25, and close below EMA21.
+SHORT requires all of: close below prior Donchian low, TR ratio >= 1.5, RVOL >= 1.5, close location <= 0.25, and close below EMA21.
 
 ## Safety gates
 
@@ -38,7 +38,7 @@ SHORT requires all of: close below prior Donchian low, TR ratio >= 2.0, RVOL >= 
 Defaults are conservative starting values, not a substitute for account-specific fee settings or walk-forward testing:
 
 - `MEX_MIN_RVOL=1.5`
-- `MEX_MIN_TR_RATIO=2.0`
+- `MEX_MIN_TR_RATIO=1.5`
 - `MEX_ROUND_TRIP_TAKER_FEE_PCT=0.10` (percentage points; replace with the actual round-trip taker fee for the account)
 - `MEX_LOG_ONLY=true`
 
@@ -80,7 +80,7 @@ Not implemented/enabled in this minimal base version. Do not add it until the ba
 BOT_MODULE=MEX
 MEX_ENABLED=true
 MEX_MIN_RVOL=1.5
-MEX_MIN_TR_RATIO=2.0
+MEX_MIN_TR_RATIO=1.5
 MEX_LOG_ONLY=false
 MEX_ROUND_TRIP_TAKER_FEE_PCT=0.10
 MEX_LOG_ONLY=true
