@@ -260,9 +260,8 @@ async def ready():
     return JSONResponse(status_code=200 if ready_state else 503, content=payload)
 
 
-@app.get("/status")
-async def status():
-    """Compact operational snapshot for debugging; contains no credentials or secrets."""
+def _status_snapshot() -> dict:
+    """Build the diagnostics payload off the ASGI event loop."""
     data, report = _operational_snapshot()
     shadow_ml = {}
     journal_counts = {}
@@ -326,6 +325,12 @@ async def status():
             "state_store_ok": data.get("state_store_ok", False),
         },
     })
+
+
+@app.get("/status")
+async def status():
+    """Compact operational snapshot without blocking the ASGI event loop."""
+    return await asyncio.to_thread(_status_snapshot)
 
 
 @app.get("/health")
