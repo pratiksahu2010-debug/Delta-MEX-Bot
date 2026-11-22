@@ -14,7 +14,29 @@ from .momentum import evaluate_mex
 
 REQUIRED_COLUMNS = ("symbol", "timestamp", "open", "high", "low", "close", "volume")
 SUPPORTED_STRATEGIES = ("MEX",)
-MAX_HISTORY_BARS = 120
+MAX_HISTORY_BARS = 250
+DEFAULT_REPLAY_THRESHOLDS = {
+    "mex_min_rvol": 2.0,
+    "mex_min_tr_ratio": 2.0,
+    "mex_min_quote_volume_usd": 100000.0,
+    "mex_round_trip_taker_fee_pct": 0.10,
+}""Offline completed-candle detector replay.
+
+This module measures raw setup frequency and rejection reasons. It deliberately
+does not simulate L1 quote confirmation, Telegram latency, fills, fees, P&L or
+orders. Do not interpret setup counts as backtest performance.
+"""
+import math
+from pathlib import Path
+
+import pandas as pd
+
+from .momentum import evaluate_mex
+
+
+REQUIRED_COLUMNS = ("symbol", "timestamp", "open", "high", "low", "close", "volume")
+SUPPORTED_STRATEGIES = ("MEX",)
+MAX_HISTORY_BARS = 250
 DEFAULT_REPLAY_THRESHOLDS = {
     "tpr_adx_min": 17.0,
     "orb_min_rvol": 1.10,
@@ -35,11 +57,14 @@ def validate_replay_data(frame: pd.DataFrame) -> pd.DataFrame:
         raise ValueError("Replay input contains no candle rows")
     if frame["symbol"].isna().any():
         raise ValueError("Replay input contains a missing symbol")
-    data = frame.loc[:, list(REQUIRED_COLUMNS)].copy()
+    optional = ["quote_volume_24h_usd"] if "quote_volume_24h_usd" in frame.columns else []
+    data = frame.loc[:, [*REQUIRED_COLUMNS, *optional]].copy()
     data["symbol"] = data["symbol"].astype(str).str.strip().str.upper()
     if data["symbol"].eq("").any():
         raise ValueError("Replay input contains an empty symbol")
     data["timestamp"] = pd.to_datetime(data["timestamp"], utc=True, errors="coerce")
+    if "quote_volume_24h_usd" in data.columns:
+        data["quote_volume_24h_usd"] = pd.to_numeric(data["quote_volume_24h_usd"], errors="coerce")
     if data["timestamp"].isna().any():
         raise ValueError("Replay input contains an invalid timestamp")
     for column in ("open", "high", "low", "close", "volume"):
@@ -71,9 +96,18 @@ def _evaluate(strategy: str, frame: pd.DataFrame, thresholds: dict):
     diagnostics = {}
     if strategy != "MEX":
         raise ValueError(f"Unsupported replay strategy: {strategy}")
+    latest = frame.iloc[-1]
+    quote_volume = latest.get("quote_volume_24h_usd")
+    candle_close_time = latest["timestamp"].to_pydatetime() + pd.Timedelta(minutes=5, seconds=1)
     result = evaluate_mex(
-        frame, min_rvol=thresholds["mex_min_rvol"],
-        min_atr_expansion=thresholds["mex_min_atr_expansion"], diagnostics=diagnostics,
+        frame,
+        quote_volume_24h_usd=quote_volume,
+        min_quote_volume_usd=thresholds["mex_min_quote_volume_usd"],
+        round_trip_taker_fee_pct=thresholds["mex_round_trip_taker_fee_pct"],
+        min_rvol=thresholds["mex_min_rvol"],
+        min_tr_ratio=thresholds["mex_min_tr_ratio"],
+        now=candle_close_time.to_pydatetime() if hasattr(candle_close_time, "to_pydatetime") else candle_close_time,
+        diagnostics=diagnostics,
     )
     return result, diagnostics
 
@@ -182,7 +216,7 @@ def replay_dataframe(
             if segment.empty:
                 continue
             segments += 1
-            for end_index in range(59, len(segment)):
+            for end_index in range(MAX_HISTORY_BARS - 1, len(segment)):
                 window = segment.iloc[max(0, end_index - MAX_HISTORY_BARS + 1):end_index + 1]
                 candle = window.iloc[-1]
                 ohlcv = window.drop(columns=["symbol"]).reset_index(drop=True)
@@ -202,7 +236,9 @@ def replay_dataframe(
                                 "symbol": symbol, "timestamp": candle["timestamp"].isoformat(),
                                 "strategy": strategy, "decision": "error", "side": "",
                                 "entry_reference": None, "trigger_price": None,
-                                "stop_loss": None, "take_profit_1": None, "atr": None,
+                                "stop_loss": None, "take_profit_1": None, "take_profit_2": None,
+                                "rvol": None, "tr_ratio": None, "risk_reward": None,
+                                "quote_volume_24h_usd": None, "atr": None,
                                 "reason": reason, "diagnostics": str(exc),
                             })
                         continue
@@ -239,8 +275,8 @@ def replay_dataframe(
         stat["rejections"] = dict(sorted(stat["rejections"].items()))
     columns = [
         "symbol", "timestamp", "strategy", "decision", "side",
-        "entry_reference", "trigger_price", "stop_loss", "take_profit_1",
-        "atr", "reason", "diagnostics",
+        "entry_reference", "trigger_price", "stop_loss", "take_profit_1", "take_profit_2",
+        "rvol", "tr_ratio", "risk_reward", "quote_volume_24h_usd", "atr", "reason", "diagnostics",
     ]
     return pd.DataFrame(events, columns=columns), {
         "mode": "detector_replay_only",
@@ -252,10 +288,9 @@ def replay_dataframe(
         "strategies": metrics,
         "thresholds": thresholds,
         "limitations": [
-            "No live L1 bid/ask quote confirmation is simulated.",
-            "MEX forming-candle volume projection is not simulated; MEX is evaluated on completed candles only.",
-            "No Telegram delivery latency, spread, slippage, fees or funding is simulated.",
-            "No entry fills, exits, P&L, drawdown or profitability are calculated.",
+            "The replay measures detector candidates only; it does not calculate forward exits or expectancy.",
+            "Historical quote_volume_24h_usd must be supplied per candle to test the live liquidity gate without look-ahead; otherwise the liquidity gate rejects the candidate.",
+            "No spread, slippage, funding, Telegram latency, or real execution fills are simulated.",
             "Repeated qualifying candles are raw detector candidates, not deduplicated live alerts.",
         ],
     }
