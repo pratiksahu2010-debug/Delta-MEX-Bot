@@ -53,7 +53,7 @@ class SignalEngine:
         migrate_on_startup = True
         self.rest = DeltaRestClient(settings.delta_base_url)
         self.stream = DeltaPublicStream(
-            [], self.on_quote, self.on_stream_disconnect, on_candle=self.on_live_candle
+            [], self.on_quote, self.on_stream_disconnect, on_candle=None
         )
         self.configured_symbols = list(settings.symbol_list)
         self.active_symbols: list[str] = []
@@ -62,6 +62,11 @@ class SignalEngine:
         self.quotes: dict[str, Quote] = {}
         self.received_at: dict[str, datetime] = {}
         self.last_quote_exchange_at: dict[str, datetime] = {}
+        self.quote_volume_24h_usd: dict[str, float] = {}
+        self.ticker_snapshot_at: datetime | None = None
+        self._ticker_snapshot_lock = asyncio.Lock()
+        self.mex_runtime = {"candidates": 0, "log_only_candidates": 0, "signals_claimed": 0,
+                            "state_rejections": {}, "last_candidate": None}
         self.quote_rejection_diagnostics = {"counts": {}, "recent": [], "last": None}
         self.rest_quote_polls = 0
         self.rest_quote_updates = 0
@@ -88,9 +93,14 @@ class SignalEngine:
                 "rejections": 0, "rejections_by_reason": {},
                 "detail_counts": {}, "recent_rejections": [], "last_rejection": None,
                 "last_rejection_by_reason": {},
-                "mex_gate_counts": {"evaluated": 0, "squeeze_pass": 0, "squeeze_fail": 0,
-                                    "rvol_pass": 0, "rvol_fail": 0, "rvol_unavailable": 0,
-                                    "adx_pass": 0, "adx_fail": 0},
+                "mex_gate_counts": {
+                    "evaluated": 0, "breakout_pass": 0, "breakout_fail": 0,
+                    "tr_ratio_pass": 0, "tr_ratio_fail": 0, "rvol_pass": 0, "rvol_fail": 0,
+                    "close_location_pass": 0, "close_location_fail": 0,
+                    "ema21_pass": 0, "ema21_fail": 0, "extension_pass": 0, "extension_fail": 0,
+                    "cost_pass": 0, "cost_fail": 0, "liquidity_pass": 0, "liquidity_fail": 0,
+                    "rr_pass": 0, "rr_fail": 0,
+                },
                 "mex_evaluation_sources": {
                     "live_forming": {"evaluations": 0, "unique_symbol_candles": 0,
                                      "setups": 0, "rejections": 0},
@@ -289,9 +299,12 @@ class SignalEngine:
         """
         now = datetime.now(timezone.utc)
         restored = expired = invalid = 0
+        if self._module_enabled("MEX") and bool(getattr(self.settings, "mex_log_only", True)):
+            self.mex_runtime["suppressed_legacy_outbox"] = self.store.suppress_pending_mex_alerts()
         for symbol, strategy, payload in self.store.load_pending_setups():
             try:
-                if strategy == "NORMAL":
+                if strategy in ("NORMAL", "MEX"):
+                    # The minimal MEX sends at the completed candle close; old V2 quote-trigger setups are obsolete.
                     self.store.delete_pending_setup(symbol, strategy)
                     continue
                 if strategy not in ("TPR", "RB", "ORB", "MEX"):
@@ -427,13 +440,10 @@ class SignalEngine:
             log.exception("Unable to persist signal journal evaluation symbol=%s strategy=%s", symbol, strategy)
         if result:
             if strategy == "MEX":
-                gates = self.strategy_diagnostics[strategy].setdefault("mex_gate_counts", {
-                    "evaluated": 0, "squeeze_pass": 0, "squeeze_fail": 0,
-                    "rvol_pass": 0, "rvol_fail": 0, "rvol_unavailable": 0,
-                    "adx_pass": 0, "adx_fail": 0,
-                })
+                gates = self.strategy_diagnostics[strategy]["mex_gate_counts"]
                 gates["evaluated"] += 1
-                for gate in ("squeeze", "rvol", "adx"):
+                for gate in ("breakout", "tr_ratio", "rvol", "close_location",
+                             "ema21", "extension", "cost", "liquidity", "rr"):
                     gates[f"{gate}_pass"] += 1
             stats["setups_armed"] += 1
         else:
@@ -446,26 +456,39 @@ class SignalEngine:
             histogram[reason] = histogram.get(reason, 0) + 1
             values = diagnostic.get("values", {}) if isinstance(diagnostic, dict) else {}
             if strategy == "MEX":
-                gates = summary.setdefault("mex_gate_counts", {
-                    "evaluated": 0, "squeeze_pass": 0, "squeeze_fail": 0,
-                    "rvol_pass": 0, "rvol_fail": 0, "adx_pass": 0, "adx_fail": 0,
-                })
-                failed = set(values.get("failed_filters", [])) if isinstance(values, dict) else set()
-                if reason in ("rvol_zero_or_missing_volume_baseline", "rvol_invalid"):
-                    # RVOL is unavailable, not a confirmed pass or fail. Keep it
-                    # separate so gate counters do not imply squeeze/ADX were tested.
-                    gates["rvol_unavailable"] = gates.get("rvol_unavailable", 0) + 1
-                # Gate counters follow the ordered MEX V2 pipeline. A later-stage
-                # rejection proves all earlier gates passed.
-                stage = diagnostic.get("stage")
-                if stage not in ("history", "data_validation", "indicators", "candle"):
-                    gates["evaluated"] += 1
-                    ordered_gates = ("squeeze", "rvol", "adx")
-                    failed_gate = {"squeeze": "squeeze", "rvol": "rvol", "adx": "adx"}.get(stage)
-                    for gate in ordered_gates:
-                        outcome = "fail" if gate == failed_gate else "pass"
-                        if failed_gate is None or ordered_gates.index(gate) < ordered_gates.index(failed_gate) or gate == failed_gate:
-                            gates[f"{gate}_{outcome}"] += 1
+                gates = summary["mex_gate_counts"]
+                gates["evaluated"] += 1
+                failed_gate = None
+                if reason == "no_donchian_breakout":
+                    failed_gate = "breakout"
+                elif reason == "tr_ratio_below_minimum":
+                    failed_gate = "tr_ratio"
+                elif reason == "rvol_below_minimum":
+                    failed_gate = "rvol"
+                elif reason.startswith("close_location_"):
+                    failed_gate = "close_location"
+                elif reason.startswith("close_not_"):
+                    failed_gate = "ema21"
+                elif reason == "entry_extension_exceeded":
+                    failed_gate = "extension"
+                elif reason in ("atr_below_cost_floor", "round_trip_taker_fee_not_configured"):
+                    failed_gate = "cost"
+                elif reason == "quote_volume_24h_below_minimum":
+                    failed_gate = "liquidity"
+                elif reason == "tp2_risk_reward_below_minimum":
+                    failed_gate = "rr"
+                ordered = ("breakout", "tr_ratio", "rvol", "close_location",
+                           "ema21", "extension", "cost", "liquidity", "rr")
+                if failed_gate is not None:
+                    for gate in ordered:
+                        if ordered.index(gate) < ordered.index(failed_gate):
+                            gates[f"{gate}_pass"] += 1
+                        elif gate == failed_gate:
+                            gates[f"{gate}_fail"] += 1
+                            break
+                elif diagnostic.get("stage") in ("log_only", "state"):
+                    for gate in ordered:
+                        gates[f"{gate}_pass"] += 1
             # Preserve bounded, numeric evidence so /status can distinguish
             # low participation from weak volatility expansion without
             # changing detector eligibility or flooding application logs.
@@ -488,6 +511,9 @@ class SignalEngine:
                 "range_zero_range_positive_volume_count",
                 "ema_spread_atr", "ema21_slope_atr", "adx", "adx_min",
                 "risk_atr", "extension_atr", "close_location", "body_atr",
+                "tr_ratio", "min_tr_ratio", "rvol_baseline", "atr_pct", "minimum_atr_pct",
+                "quote_volume_24h_usd", "min_quote_volume_usd", "risk_reward_tp2",
+                "min_risk_reward_tp2", "donchian_high_prior", "donchian_low_prior",
                 "range_atr", "candle_body_atr", "candle_range_atr",
                 "range_high", "range_low", "range_lookback", "range_bar_count",
                 "efficiency_ratio", "min_efficiency", "trend_consistency", "min_consistency",
@@ -572,6 +598,8 @@ class SignalEngine:
         log.warning("WebSocket disconnected; live MEX candles and quote confirmations reset")
 
     async def on_live_candle(self, symbol: str, candle: Candle, received: datetime) -> None:
+        # MEX v3 is closed-candle only; forming WebSocket candles are never actionable.
+        return
         """Evaluate MEX on verified live traded-price OHLCV updates.
 
         Only the current forming 5m candle is appended to completed REST history.
@@ -1008,6 +1036,40 @@ class SignalEngine:
                     except Exception:
                         log.exception("Unable to persist Telegram retry schedule key=%s", key)
 
+    async def _refresh_ticker_snapshot(self, force: bool = False) -> None:
+        now = datetime.now(timezone.utc)
+        if (not force and self.ticker_snapshot_at is not None
+                and (now - self.ticker_snapshot_at).total_seconds() < 30):
+            return
+        async with self._ticker_snapshot_lock:
+            now = datetime.now(timezone.utc)
+            if (not force and self.ticker_snapshot_at is not None
+                    and (now - self.ticker_snapshot_at).total_seconds() < 30):
+                return
+            rows = await self.rest.tickers()
+            self._update_ticker_snapshot(rows, now)
+
+    def _update_ticker_snapshot(self, rows, received: datetime) -> None:
+        snapshot = {}
+        active = set(self.active_symbols or self.configured_symbols)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            symbol = str(row.get("symbol") or "").strip().upper()
+            if symbol not in active:
+                continue
+            raw = row.get("turnover_usd")
+            if raw is None and str(row.get("turnover_symbol") or "").upper() == "USD":
+                raw = row.get("turnover")
+            try:
+                value = float(raw)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(value) and value >= 0:
+                snapshot[symbol] = value
+        self.quote_volume_24h_usd = snapshot
+        self.ticker_snapshot_at = received
+
     async def refresh_context(self, symbol: str) -> None:
         now = datetime.now(timezone.utc)
         # 15m context is informational: refresh once per completed 15m bucket,
@@ -1054,8 +1116,15 @@ class SignalEngine:
         self.last_candle_fetch_at[symbol] = attempted_at
         diagnostic = self.candle_diagnostics.setdefault(symbol, {})
         diagnostic["last_attempt_at"] = attempted_at.isoformat()
+        mex_active = (
+            self._module_enabled("MEX")
+            and getattr(self.settings, "mex_enabled", True)
+            and symbol in getattr(self.settings, "momentum_symbol_list", ())
+        )
         try:
-            bars = await self.rest.candles(symbol, "5m", 120)
+            if mex_active:
+                await self._refresh_ticker_snapshot()
+            bars = await self.rest.candles(symbol, "5m", 320)
         except Exception as exc:
             diagnostic["last_attempt_status"] = "error"
             diagnostic["last_error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
@@ -1074,13 +1143,16 @@ class SignalEngine:
             else:
                 diagnostic["reason"] = "empty_refresh_using_cached_data"
             return
-        if len(bars) < 60:
+        required_bars = 250 if mex_active else 60
+        if len(bars) < required_bars:
             if symbol not in self.candles:
-                diagnostic.update(state="warming", reason="insufficient_history")
+                diagnostic.update(state="warming", reason="insufficient_history",
+                                  required_bars=required_bars)
             else:
                 diagnostic["reason"] = "insufficient_refresh_using_cached_data"
             diagnostic["last_bar_time"] = bars[-1].timestamp.isoformat()
-            log.info("5m candle history warming symbol=%s bars=%s required=60", symbol, len(bars))
+            log.info("5m candle history warming symbol=%s bars=%s required=%s",
+                     symbol, len(bars), required_bars)
             return
         latest = bars[-1]
         diagnostic["last_bar_time"] = latest.timestamp.isoformat()
@@ -1099,10 +1171,10 @@ class SignalEngine:
             diagnostic.update(state="stale", reason="latest_completed_candle_too_old")
             log.warning("Skipping stale 5m candles symbol=%s lag_seconds=%.1f", symbol, candle_lag)
             return
-        recent = bars[-60:]
+        recent = bars[-250:] if mex_active else bars[-60:]
         if any((current.timestamp - previous.timestamp).total_seconds() != 300
                for previous, current in zip(recent, recent[1:])):
-            diagnostic.update(state="gap", reason="missing_5m_intervals")
+            diagnostic.update(state="gap", reason="missing_5m_intervals", bars_checked=len(recent), required_bars=required_bars)
             self.candles[symbol] = bars
             log.warning("Skipping strategy evaluation due to missing 5m intervals symbol=%s", symbol)
             return
@@ -1111,7 +1183,7 @@ class SignalEngine:
         if live_candle is not None and live_candle.timestamp <= latest.timestamp:
             self.live_mex_candles.pop(symbol, None)
             self.live_mex_last_eval.pop(symbol, None)
-        diagnostic.update(state="ready", reason="60_plus_contiguous_fresh_candles")
+        diagnostic.update(state="ready", reason=f"{required_bars}_plus_contiguous_fresh_candles", required_bars=required_bars)
         previous_evaluated = self.last_evaluated.get(symbol)
         if previous_evaluated is not None and latest.timestamp <= previous_evaluated:
             return
@@ -1123,43 +1195,105 @@ class SignalEngine:
                 "low": b.low, "close": b.close, "volume": b.volume,
             } for b in bars])
 
-            momentum_specs = []
-            if (self._module_enabled("MEX") and symbol in getattr(self.settings, "momentum_symbol_list", ())
-                    and getattr(self.settings, "mex_enabled", True)):
-                momentum_specs.append((
-                    "MEX",
-                    lambda diagnostics: evaluate_mex(
-                        frame, adx_min=float(getattr(self.settings, "adx_min", 19.0)),
-                        min_rvol=float(getattr(self.settings, "mex_min_rvol", 1.50)),
-                        diagnostics=diagnostics,
-                    ),
-                ))
-
-            for strategy, evaluator in momentum_specs:
-                current_strategy = strategy
-                key = (symbol, strategy)
-                existing = self.pending.get(symbol) if strategy == "TPR" else self.momentum_pending.get(key)
-                if existing is not None:
-                    existing.bars_remaining -= 1
-                    try:
-                        self._persist_pending_setup(existing)
-                    except Exception:
-                        log.exception("Unable to update persisted %s setup symbol=%s", strategy, symbol)
-                    if existing.bars_remaining < 0 or latest.timestamp >= existing.expires_at:
-                        self._record_trigger_event(strategy, symbol, "setup_expired_on_candle")
-                        self._transition_setup(existing, "EXPIRED", "setup_expired_on_candle")
-                        self._remove_pending_setup(symbol, strategy, existing)
-                        existing = None
-                if existing is not None:
-                    continue
-                current_strategy = strategy
+            if mex_active:
+                current_strategy = "MEX"
                 diagnostics = {}
-                result = evaluator(diagnostics)
-                if strategy == "MEX":
-                    diagnostics["evaluation_source"] = "completed_candle"
-                self._record_strategy_evaluation(strategy, latest, result, symbol, diagnostics)
+                result = evaluate_mex(
+                    frame,
+                    quote_volume_24h_usd=self.quote_volume_24h_usd.get(symbol),
+                    min_quote_volume_usd=float(getattr(self.settings, "mex_min_24h_quote_volume_usd", 100000.0)),
+                    round_trip_taker_fee_pct=float(getattr(self.settings, "mex_round_trip_taker_fee_pct", 0.10)),
+                    min_rvol=float(getattr(self.settings, "mex_min_rvol", 2.0)),
+                    min_tr_ratio=float(getattr(self.settings, "mex_min_tr_ratio", 2.0)),
+                    diagnostics=diagnostics,
+                )
+                diagnostics["evaluation_source"] = "completed_candle"
                 if result:
-                    self._arm_setup(symbol, strategy, result, latest)
+                    self.mex_runtime["candidates"] += 1
+                    self.mex_runtime["last_candidate"] = {
+                        "symbol": symbol, "side": result["side"],
+                        "candle_time": latest.timestamp.isoformat(),
+                        "entry": result["entry_reference"],
+                        "rvol": result["rvol"], "tr_ratio": result["tr_ratio"],
+                    }
+                    if bool(getattr(self.settings, "mex_log_only", True)):
+                        diagnostics["candidate"] = result
+                        diagnostics["stage"] = "log_only"
+                        diagnostics["reason"] = "log_only_candidate"
+                        self.mex_runtime["log_only_candidates"] += 1
+                        self._record_strategy_evaluation("MEX", latest, None, symbol, diagnostics)
+                        log.info(
+                            "MEX LOG-ONLY candidate symbol=%s side=%s entry=%.10g rvol=%.2f tr_ratio=%.2f",
+                            symbol, result["side"], result["entry_reference"],
+                            result["rvol"], result["tr_ratio"],
+                        )
+                    else:
+                        signal_key = (
+                            f"{symbol}:MEX:{result['side']}:{latest.timestamp.isoformat()}"
+                        )
+                        alert = {
+                            "symbol": symbol, "side": result["side"], "strategy": "MEX",
+                            "entry": result["entry_reference"], "stop_loss": result["stop_loss"],
+                            "take_profit_1": result["take_profit_1"],
+                            "take_profit_2": result["take_profit_2"],
+                            "risk_reward": result["risk_reward"], "rvol": result["rvol"],
+                            "tr_ratio": result["tr_ratio"], "atr_pct": result["atr_pct"],
+                            "quote_volume_24h_usd": result["quote_volume_24h_usd"],
+                            "setup_time": latest.timestamp.isoformat(),
+                            "trigger_confirmed_at": (latest.timestamp + timedelta(minutes=5)).isoformat(),
+                            "reason": result["reason"], "context_15m": "NOT_USED",
+                            "atr": result["atr"], "outcome_tp2_r_multiple": 2.0,
+                            "outcome_horizon_bars": int(getattr(self.settings, "outcome_horizon_bars", 12)),
+                            "outcome_fee_pct": float(getattr(self.settings, "mex_round_trip_taker_fee_pct", 0.10)),
+                            "outcome_slippage_pct": float(getattr(self.settings, "outcome_slippage_pct", 0.0)),
+                        }
+                        claimed, claim_reason = self.store.claim_mex_signal(
+                            signal_key, symbol, result["side"], latest.timestamp.isoformat(),
+                            alert, max_per_hour=5, cooldown_bars=12,
+                        )
+                        if not claimed:
+                            diagnostics["stage"] = "state"
+                            diagnostics["reason"] = claim_reason
+                            diagnostics.setdefault("values", {})["candidate"] = result["indicators"]
+                            counts = self.mex_runtime["state_rejections"]
+                            counts[claim_reason] = counts.get(claim_reason, 0) + 1
+                            self._record_strategy_evaluation("MEX", latest, None, symbol, diagnostics)
+                            log.info("MEX candidate blocked symbol=%s reason=%s", symbol, claim_reason)
+                        else:
+                            self._record_strategy_evaluation("MEX", latest, result, symbol, diagnostics)
+                            self.mex_runtime["signals_claimed"] += 1
+                            try:
+                                self.journal.update_lifecycle(
+                                    "MEX", symbol, latest.timestamp.isoformat(), "trigger_confirmed",
+                                    float(result["entry_reference"]),
+                                    event_at=alert["trigger_confirmed_at"],
+                                    trigger_price=float(result["entry_reference"]),
+                                    trigger_confirmed_at=alert["trigger_confirmed_at"],
+                                    side=result["side"], stop_loss=result["stop_loss"],
+                                    target_price=result["take_profit_1"],
+                                    target_price_2=result["take_profit_2"], atr=result["atr"],
+                                    horizon_bars=alert["outcome_horizon_bars"],
+                                    fee_pct=alert["outcome_fee_pct"],
+                                    slippage_pct=alert["outcome_slippage_pct"],
+                                    tp2_r_multiple=2.0,
+                                )
+                            except Exception:
+                                log.exception("MEX signal queued but journal lifecycle update failed symbol=%s", symbol)
+                            log.info(
+                                "MEX SIGNAL QUEUED symbol=%s side=%s candle=%s entry=%.10g SL=%.10g TP1=%.10g TP2=%.10g",
+                                symbol, result["side"], latest.timestamp.isoformat(),
+                                result["entry_reference"], result["stop_loss"],
+                                result["take_profit_1"], result["take_profit_2"],
+                            )
+                            await self.deliver_outbox()
+                else:
+                    self._record_strategy_evaluation("MEX", latest, None, symbol, diagnostics)
+                    log.info(
+                        "MEX candidate rejected symbol=%s candle=%s first_failed_gate=%s evidence=%s",
+                        symbol, latest.timestamp.isoformat(),
+                        diagnostics.get("reason", "unclassified"),
+                        diagnostics.get("values", {}),
+                    )
 
             self.last_evaluated[symbol] = latest.timestamp
         except Exception as exc:
@@ -1278,6 +1412,7 @@ class SignalEngine:
                 try:
                     rows = await self.rest.tickers()
                     received = datetime.now(timezone.utc)
+                    self._update_ticker_snapshot(rows, received)
                     active = set(self.active_symbols)
                     updated = 0
                     for row in rows:
@@ -1585,7 +1720,7 @@ class SignalEngine:
                 1 for bars in self.candles.values()
                 if len(bars) >= 2 and any(
                     (current.timestamp - previous.timestamp).total_seconds() != 300
-                    for previous, current in zip(bars[-60:], bars[-59:])
+                    for previous, current in zip(bars[-250:], bars[-249:])
                 )
             ),
             "candle_gap_list": [symbol for symbol, diag in self.candle_diagnostics.items() if diag.get("state") == "gap"],
@@ -1599,6 +1734,18 @@ class SignalEngine:
             "strategy_evaluations": module_evaluations,
             "trigger_lifecycle": module_triggers,
             "strategy_diagnostics": module_diagnostics,
+            "mex_runtime": {
+                **self.mex_runtime,
+                "log_only": bool(getattr(self.settings, "mex_log_only", True)),
+                "min_bars": 250,
+                "min_rvol": float(getattr(self.settings, "mex_min_rvol", 2.0)),
+                "min_tr_ratio": float(getattr(self.settings, "mex_min_tr_ratio", 2.0)),
+                "min_quote_volume_24h_usd": float(getattr(self.settings, "mex_min_24h_quote_volume_usd", 100000.0)),
+                "round_trip_taker_fee_pct": float(getattr(self.settings, "mex_round_trip_taker_fee_pct", 0.10)),
+                "quote_volume_symbols": len(self.quote_volume_24h_usd),
+                "ticker_snapshot_at": self.ticker_snapshot_at.isoformat() if self.ticker_snapshot_at else None,
+                "state": self.store.mex_state() if state_store_ok else None,
+            },
             "telegram_delivery": dict(self.telegram_delivery),
             "pending_setups": len(self.pending) + len(self.momentum_pending),
             "persisted_pending_setups": self.store.pending_setup_count() if state_store_ok else None,

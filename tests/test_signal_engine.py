@@ -730,32 +730,18 @@ def test_trigger_lifecycle_distinguishes_quote_extension_rejection(tmp_path):
 
 
 
-def test_pending_setup_restores_after_engine_restart_and_resets_quote_confirmation(tmp_path):
+def test_legacy_mex_quote_trigger_setup_is_discarded_on_restart(tmp_path):
     now = datetime.now(timezone.utc)
     first, _ = make_engine(tmp_path)
     setup = make_setup("LONG", now)
     setup.strategy = "MEX"
-    setup.trigger_candidate_at = now - timedelta(seconds=0.4)
-    setup.trigger_candidate_last_at = now - timedelta(seconds=0.2)
-    assert first._transition_setup(setup, "CONFIRMING", "test_partial_quote_confirmation")
     first._persist_pending_setup(setup)
 
     second, _ = make_engine(tmp_path)
     result = second.restore_pending_setups()
-    restored = second.momentum_pending[("BTCUSD", "MEX")]
-    assert result["restored"] == 1
-    assert restored.side == "LONG"
-    assert restored.trigger_candidate_at is None
-    assert restored.trigger_candidate_last_at is None
-    assert restored.lifecycle_state == "ARMED"
-    lifecycle = second.store.setup_lifecycle("BTCUSD", "MEX", setup.candle_time.isoformat())
-    assert lifecycle["state"] == "ARMED"
-    events = second.store.setup_lifecycle_events("BTCUSD", "MEX", setup.candle_time.isoformat())
-    assert [(event["from_state"], event["to_state"], event["reason"]) for event in events][-1] == (
-        "CONFIRMING", "ARMED", "restart_confirmation_reset"
-    )
-    assert second.health()["persisted_pending_setups"] == 1
-
+    assert result["restored"] == 0
+    assert ("BTCUSD", "MEX") not in second.momentum_pending
+    assert second.store.pending_setup_count() == 0
     asyncio.run(first.rest.close())
     asyncio.run(second.rest.close())
 

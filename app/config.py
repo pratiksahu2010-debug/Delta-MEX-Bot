@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     tpr_rb_symbols_file: str = "config/tpr_rb_symbols.txt"
     adx_min: float = 19.0
     mex_enabled: bool = True
-    # MEX V2 arms setups only from completed REST candles; live WS candles are trigger data only.
+    # Minimal MEX evaluates completed REST candles only; forming WebSocket candles are ignored.
     mex_live_enabled: bool = False
     orb_enabled: bool = True
     orb_min_rvol: float = 1.10
@@ -30,7 +30,13 @@ class Settings(BaseSettings):
     rb_enabled: bool = True
     rb_min_rvol: float = 1.45
     rb_range_lookback: int = 12
-    mex_min_rvol: float = 1.50
+    mex_min_rvol: float = 1.5
+    mex_min_tr_ratio: float = 2.0
+    mex_min_24h_quote_volume_usd: float = 100000.0
+    # Set this to the account's actual round-trip taker fee, in percentage points.
+    mex_round_trip_taker_fee_pct: float = 0.10
+    # Keep true for the required one-week log-only validation before Telegram alerts.
+    mex_log_only: bool = True
     mex_min_atr_expansion: float = 1.15
     mex_live_min_eval_interval_seconds: float = 0.75
     candle_timeframe: str = "5m"
@@ -159,7 +165,9 @@ class Settings(BaseSettings):
             raise ValueError("Unsafe configuration: signal-only must be true and order execution must be disabled")
         float_thresholds = (
             self.adx_min, self.orb_min_rvol,
-            self.rb_min_rvol, self.mex_min_rvol, self.mex_min_atr_expansion,
+            self.rb_min_rvol, self.mex_min_rvol, self.mex_min_tr_ratio,
+            self.mex_min_24h_quote_volume_usd, self.mex_round_trip_taker_fee_pct,
+            self.mex_min_atr_expansion,
             self.mex_live_min_eval_interval_seconds, self.quote_max_age_seconds,
             self.max_entry_extension_atr, self.trigger_confirmation_seconds,
             self.trigger_confirmation_max_gap_seconds, self.candle_poll_interval_seconds,
@@ -167,7 +175,10 @@ class Settings(BaseSettings):
         if (not all(math.isfinite(value) for value in float_thresholds)
                 or self.adx_min < 0 or self.orb_min_rvol <= 0
                 or self.rb_min_rvol <= 0 or self.rb_range_lookback < 8
-                or self.mex_min_rvol <= 0 or self.mex_min_atr_expansion <= 0
+                or self.mex_min_rvol <= 0 or self.mex_min_tr_ratio <= 0
+                or self.mex_min_24h_quote_volume_usd < 0
+                or self.mex_round_trip_taker_fee_pct <= 0
+                or self.mex_min_atr_expansion <= 0
                 or self.mex_live_min_eval_interval_seconds < 0
                 or self.quote_max_age_seconds <= 0 or self.max_entry_extension_atr <= 0
                 or self.signal_max_age_bars < 1

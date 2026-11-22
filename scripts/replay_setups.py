@@ -16,7 +16,7 @@ from app.replay import SUPPORTED_STRATEGIES, load_strategy_universes, replay_dat
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", required=True, help="CSV with symbol,timestamp,open,high,low,close,volume")
+    parser.add_argument("--input", required=True, help="CSV with symbol,timestamp,open,high,low,close,volume and historical quote_volume_24h_usd")
     parser.add_argument("--output", required=True, help="Output CSV path for raw detector events")
     parser.add_argument("--universe-dir", default="config", help="Directory containing live symbol-universe files")
     parser.add_argument(

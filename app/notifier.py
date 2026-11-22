@@ -45,26 +45,34 @@ class TelegramNotifier:
     def _format_signal(signal: dict) -> str:
         """Format every signal field in bold HTML, escaping all dynamic values."""
         strategy = str(signal.get("strategy", "PULLBACK")).upper()
-        strategy_label = {
-            "PULLBACK": "NORMAL",
-            "NORMAL": "NORMAL",
-            "ORB": "ORB",
-            "MEX": "MEX",
-        }.get(strategy, strategy)
         side = str(signal.get("side", "")).upper()
         dot = {"LONG": "🟢", "SHORT": "🔴"}.get(side, "⚪")
         symbol = html.escape(str(signal.get("symbol", "UNKNOWN")))
-        heading = f"{dot} <b>{symbol} | {html.escape(strategy_label)}</b>"
-
-        fields = [
-            ("Side", side or "N/A"),
-            ("Entry", signal.get("entry", "N/A")),
-            ("Stop Loss", signal.get("stop_loss", "N/A")),
-            ("Target (2R)", signal.get("take_profit_1", "N/A")),
-            ("Setup Time (UTC)", signal.get("setup_time", "N/A")),
-            ("15m Context (informational)", signal.get("context_15m", "UNAVAILABLE")),
-            ("Reason", signal.get("reason", "N/A")),
-        ]
+        if strategy == "MEX":
+            heading = f"{dot} <b>{symbol} / {html.escape(side or 'N/A')}</b>"
+            fields = [
+                ("Entry", signal.get("entry", "N/A")),
+                ("SL", signal.get("stop_loss", "N/A")),
+                ("TP1", signal.get("take_profit_1", "N/A")),
+                ("TP2", signal.get("take_profit_2", "N/A")),
+                ("RVOL", signal.get("rvol", "N/A")),
+                ("TR_ratio", signal.get("tr_ratio", "N/A")),
+                ("R:R", signal.get("risk_reward", "N/A")),
+            ]
+        else:
+            strategy_label = {
+                "PULLBACK": "NORMAL", "NORMAL": "NORMAL", "ORB": "ORB", "MEX": "MEX",
+            }.get(strategy, strategy)
+            heading = f"{dot} <b>{symbol} | {html.escape(strategy_label)}</b>"
+            fields = [
+                ("Side", side or "N/A"),
+                ("Entry", signal.get("entry", "N/A")),
+                ("Stop Loss", signal.get("stop_loss", "N/A")),
+                ("Target (2R)", signal.get("take_profit_1", "N/A")),
+                ("Setup Time (UTC)", signal.get("setup_time", "N/A")),
+                ("15m Context (informational)", signal.get("context_15m", "UNAVAILABLE")),
+                ("Reason", signal.get("reason", "N/A")),
+            ]
         lines = [heading]
         lines.extend(
             f"<b>{html.escape(label)}: {html.escape(str(value))}</b>"

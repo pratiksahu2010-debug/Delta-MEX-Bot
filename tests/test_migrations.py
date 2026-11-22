@@ -82,6 +82,9 @@ def test_versioned_migrations_adopt_legacy_sqlite_tables_without_data_loss(tmp_p
         feedback_token_columns = {row[1] for row in db.execute("PRAGMA table_info(signal_feedback_tokens)")}
         lifecycle_current_exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='setup_lifecycle_current'").fetchone()
         lifecycle_events_exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='setup_lifecycle_events'").fetchone()
+        mex_state_exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mex_symbol_state'").fetchone()
+        mex_events_exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mex_signal_events'").fetchone()
+        mex_state_events_exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mex_state_events'").fetchone()
         signal_outcomes_exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='signal_outcomes'").fetchone()
         ml_tables = {
             row[0] for row in db.execute(
@@ -106,6 +109,7 @@ def test_versioned_migrations_adopt_legacy_sqlite_tables_without_data_loss(tmp_p
         (8, "create_durable_signal_outcomes"),
         (9, "create_point_in_time_shadow_ml_tables"),
         (10, "add_canonical_neon_storage_schema"),
+        (11, "add_minimal_mex_signal_state"),
     ]
     assert "lease_until" in outbox_columns
     assert "trigger_confirmed_at" in journal_columns
@@ -118,6 +122,9 @@ def test_versioned_migrations_adopt_legacy_sqlite_tables_without_data_loss(tmp_p
     assert ml_tables == {"ml_feature_snapshots", "ml_market_labels", "ml_training_runs", "ml_models", "ml_predictions", "ml_feedback_labels"}
     assert lifecycle_current_exists is not None
     assert lifecycle_events_exists is not None
+    assert mex_state_exists is not None
+    assert mex_events_exists is not None
+    assert mex_state_events_exists is not None
     assert outbox_count == 1
     assert journal_count == 2
     assert outcome_backfill == ("pending", 100.5, 98.5, 103.5, 104.5, 1.2)
@@ -129,7 +136,7 @@ def test_versioned_migrations_adopt_legacy_sqlite_tables_without_data_loss(tmp_p
     SignalStore(str(path))
     SignalJournal(str(path))
     with sqlite3.connect(path) as db:
-        assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 10
+        assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 11
 
 
 
@@ -190,7 +197,7 @@ def test_concurrent_sqlite_startup_applies_each_migration_once(tmp_path):
         versions = db.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-        assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,), (10,)]
+        assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,), (10,), (11,)]
         assert db.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='setup_lifecycle_events'"
         ).fetchone()[0] == 1
