@@ -125,3 +125,24 @@ def test_log_only_suppresses_only_pending_legacy_mex_outbox_items(tmp_path):
     assert store.suppress_pending_mex_alerts() == 1
     due = store.due_alerts()
     assert [item[0] for item in due] == ["unrelated-orb"]
+
+
+def test_log_only_candidate_does_not_consume_live_hourly_alert_cap(tmp_path):
+    store = SignalStore(str(tmp_path / "mex.sqlite3"))
+    now = datetime.now(timezone.utc)
+    stamp = (now - timedelta(minutes=5)).isoformat()
+    accepted, reason = store.claim_mex_signal(
+        "LOGONLY:MEX:LONG:" + stamp, "LOGONLY", "LONG", stamp,
+        _payload("LOGONLY", stamp), now=now, enqueue_alert=False,
+    )
+    assert accepted, reason
+    assert store.mex_state()["signals_last_hour"] == 0
+
+    live_stamp = (now - timedelta(minutes=5)).isoformat()
+    accepted, reason = store.claim_mex_signal(
+        "LIVE:MEX:LONG:" + live_stamp, "LIVE", "LONG", live_stamp,
+        _payload("LIVE", live_stamp), now=now, enqueue_alert=True,
+    )
+    assert accepted, reason
+    assert store.mex_state()["signals_last_hour"] == 1
+    assert [key for key, _ in store.due_alerts()] == ["LIVE:MEX:LONG:" + live_stamp]

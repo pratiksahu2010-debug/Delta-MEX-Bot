@@ -70,7 +70,8 @@ def test_mex_log_only_records_candidate_and_persists_state_without_telegram(tmp_
         assert engine.notifier.alerts == []
         assert engine.store.due_alerts() == []
         mex_state = engine.store.mex_state()
-        assert mex_state["signals_last_hour"] == 1
+        # Log-only candidates persist cooldown state but do not consume live-alert capacity.
+        assert mex_state["signals_last_hour"] == 0
         assert mex_state["states"][0]["state"] == "COOLDOWN"
         assert mex_state["states"][0]["last_breakout_level"] is not None
         record = engine.journal.latest_record()

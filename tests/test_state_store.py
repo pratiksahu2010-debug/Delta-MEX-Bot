@@ -231,11 +231,11 @@ def test_mex_cooldown_requires_price_reentry_before_same_move_can_rearm(tmp_path
         now=now + timedelta(minutes=60), enqueue_alert=False,
         breakout_level=100.0, current_price=101.0)
     assert accepted and reason == "accepted"
-    assert store.mex_state()["signals_last_hour"] == 2
+    assert store.mex_state()["signals_last_hour"] == 0
     assert store.due_alerts() == []
 
 
-def test_mex_log_only_claims_obey_global_hourly_cap(tmp_path):
+def test_mex_log_only_claims_do_not_consume_global_hourly_cap(tmp_path):
     from datetime import datetime, timedelta, timezone
     store = SignalStore(str(tmp_path / "mex-hourly.sqlite3"))
     now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
@@ -247,12 +247,12 @@ def test_mex_log_only_claims_obey_global_hourly_cap(tmp_path):
             (now - timedelta(minutes=5)).isoformat(), {**payload, "symbol": symbol},
             now=now, enqueue_alert=False, breakout_level=100.0, current_price=101.0)
         assert accepted and reason == "accepted"
-    blocked, reason = store.claim_mex_signal(
+    accepted, reason = store.claim_mex_signal(
         "SIXTHUSD:MEX:LONG:6", "SIXTHUSD", "LONG",
         (now - timedelta(minutes=5)).isoformat(), payload,
         now=now, enqueue_alert=False, breakout_level=100.0, current_price=101.0)
-    assert not blocked and reason == "global_hourly_signal_limit"
-    assert store.mex_state()["signals_last_hour"] == 5
+    assert accepted and reason == "accepted"
+    assert store.mex_state()["signals_last_hour"] == 0
     assert store.due_alerts() == []
 
 
