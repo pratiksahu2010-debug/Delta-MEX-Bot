@@ -11,6 +11,7 @@ import pandas as pd
 from .market_data import DeltaRestClient, DeltaPublicStream
 from .models import Candle, Quote
 from .momentum import evaluate_mex
+from .mex_v3_shadow import evaluate_mex_v3_shadow
 from .state_store import SignalStore
 from .signal_journal import SignalJournal
 from .validation import validate_quote
@@ -99,6 +100,11 @@ class SignalEngine:
                 },
             }
             for strategy in ("TPR", "RB", "ORB", "MEX")
+        }
+        self.mex_v3_shadow_diagnostics = {
+            "evaluated": 0, "candidates": 0, "rejections": 0,
+            "rejections_by_reason": {}, "last_evaluation": None,
+            "recent_candidates": [],
         }
         self.trigger_lifecycle = {
             strategy: {"events": {}, "last_event": None}
@@ -1157,6 +1163,34 @@ class SignalEngine:
                 result = evaluator(diagnostics)
                 if strategy == "MEX":
                     diagnostics["evaluation_source"] = "completed_candle"
+                    # MEX V3 is measurement-only. It cannot arm a setup, touch
+                    # pending state, or enqueue a Telegram alert.
+                    shadow_diagnostics = {}
+                    shadow_result = evaluate_mex_v3_shadow(
+                        frame,
+                        adx_min=float(getattr(self.settings, "adx_min", 19.0)),
+                        min_rvol=float(getattr(self.settings, "mex_min_rvol", 1.50)),
+                        diagnostics=shadow_diagnostics,
+                    )
+                    shadow = self.mex_v3_shadow_diagnostics
+                    shadow["evaluated"] += 1
+                    shadow["last_evaluation"] = {
+                        "symbol": symbol,
+                        "candle_at": latest.timestamp.isoformat(),
+                        "stage": shadow_diagnostics.get("stage"),
+                        "reason": shadow_diagnostics.get("reason"),
+                        "side": shadow_result.get("side") if shadow_result else None,
+                        "values": shadow_diagnostics.get("values", {}),
+                    }
+                    if shadow_result:
+                        shadow["candidates"] += 1
+                        shadow["recent_candidates"].append(shadow["last_evaluation"])
+                        shadow["recent_candidates"] = shadow["recent_candidates"][-20:]
+                    else:
+                        shadow["rejections"] += 1
+                        reason = shadow_diagnostics.get("reason", "unclassified")
+                        counts = shadow["rejections_by_reason"]
+                        counts[reason] = counts.get(reason, 0) + 1
                 self._record_strategy_evaluation(strategy, latest, result, symbol, diagnostics)
                 if result:
                     self._arm_setup(symbol, strategy, result, latest)
@@ -1491,6 +1525,17 @@ class SignalEngine:
                     for name, item in setup_diagnostics.items()
                 },
             }
+            if module == "MEX":
+                shadow = self.mex_v3_shadow_diagnostics
+                module_diagnostics[module]["mex_v3_shadow"] = {
+                    "evaluated": shadow["evaluated"],
+                    "candidates": shadow["candidates"],
+                    "rejections": shadow["rejections"],
+                    "rejections_by_reason": dict(shadow["rejections_by_reason"]),
+                    "last_evaluation": dict(shadow["last_evaluation"]) if shadow["last_evaluation"] else None,
+                    "recent_candidates": list(shadow["recent_candidates"]),
+                    "live_enabled": False,
+                }
             setup_triggers = {name: self.trigger_lifecycle[name] for name in setup_types}
             trigger_totals = {}
             for item in setup_triggers.values():
