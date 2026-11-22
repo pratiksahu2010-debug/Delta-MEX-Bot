@@ -280,3 +280,18 @@ def _round_or_none(value):
         return round(number, 8) if math.isfinite(number) else None
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _risk(frame, side, reference, atr_value):
+    """Legacy compatibility helper; the minimal MEX path uses its own 0.8 ATR stop."""
+    recent = frame.iloc[-5:]
+    buffer = 0.15 * atr_value
+    stop = (
+        float(recent.low.min()) - buffer if side == "LONG"
+        else float(recent.high.max()) + buffer
+    )
+    risk = reference - stop if side == "LONG" else stop - reference
+    if not math.isfinite(risk) or risk <= 0:
+        return None
+    target = reference + 2.0 * risk if side == "LONG" else reference - 2.0 * risk
+    return {"stop_loss": stop, "take_profit_1": target, "risk_distance_atr": risk / atr_value}
