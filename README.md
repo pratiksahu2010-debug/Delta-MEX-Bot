@@ -23,10 +23,12 @@ Bar-derived values:
 
 - **TR ratio** = current bar true range / previous bar ATR(14).
 - **Close location** = (close - low) / (high - low).
+- **Breakout clearance** = distance from the close beyond the prior Donchian boundary, divided by ATR(14); minimum 0.10 ATR.
+- **Body ratio** = absolute candle body / full candle range; recorded for setup-quality ranking, not a mandatory rejection gate.
 
-LONG requires all of: close above prior Donchian high, TR ratio >= 1.5, RVOL >= 1.5, close location >= 0.75, and close above EMA21.
+LONG requires all of: close at least 0.10 ATR above prior Donchian high, TR ratio >= 1.5, RVOL >= 1.15, close location >= 0.75, and close above EMA21.
 
-SHORT requires all of: close below prior Donchian low, TR ratio >= 1.5, RVOL >= 1.5, close location <= 0.25, and close below EMA21.
+SHORT requires all of: close at least 0.10 ATR below prior Donchian low, TR ratio >= 1.5, RVOL >= 1.15, close location <= 0.25, and close below EMA21.
 
 ## Safety gates
 
@@ -37,7 +39,7 @@ SHORT requires all of: close below prior Donchian low, TR ratio >= 1.5, RVOL >= 
 
 Defaults are conservative starting values, not a substitute for account-specific fee settings or walk-forward testing:
 
-- `MEX_MIN_RVOL=1.5`
+- `MEX_MIN_RVOL=1.15`
 - `MEX_MIN_TR_RATIO=1.5`
 - `MEX_ROUND_TRIP_TAKER_FEE_PCT=0.10` (percentage points; replace with the actual round-trip taker fee for the account)
 - `MEX_LOG_ONLY=true`
@@ -51,8 +53,8 @@ Defaults are conservative starting values, not a substitute for account-specific
 
 ## State and anti-spam
 
-- Per-symbol state is durably stored in PostgreSQL on Render (SQLite locally): IDLE → TRIGGERED → COOLDOWN → IDLE.
-- Cooldown lasts 12 completed 5-minute bars (60 minutes).
+- Per-symbol state is durably stored in PostgreSQL on Render (SQLite locally).
+- There is no timer-based per-symbol cooldown. The same symbol can qualify again on a later completed 5-minute candle; duplicate alerts for the same symbol and candle remain blocked.
 - A global database-serialized cap allows at most five MEX signals in any rolling hour across all symbols.
 - The signal claim, state transition, event record, and Telegram outbox insert are committed atomically. Restarting the process cannot repeat a claimed signal.
 
@@ -66,7 +68,7 @@ Defaults are conservative starting values, not a substitute for account-specific
 
 - `MEX_LOG_ONLY=false` enables Telegram alerts for qualified MEX candidates. Set it to `true` only when intentionally running a no-alert validation period.
 - Telegram delivery requires both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. The durable outbox retries temporary delivery failures and records confirmed sends.
-- Log-only candidates still claim per-symbol cooldown and count against the global five-signals-per-rolling-hour cap. They are not replayed as alerts after log-only mode is disabled. Wait for the existing cooldown/hourly window to expire before expecting new live alerts.
+- Log-only candidates are journaled for analysis but do not consume live Telegram alert capacity. They are not replayed as alerts after log-only mode is disabled.
 - Keep `SIGNAL_ONLY=true` and `ORDERS_ENABLED=false` at all times. Telegram alerts do not place orders.
 - Review candidate/rejection counts, fee assumptions, and chronological out-of-sample results with realistic fees and slippage. The replay script is not a P&L backtest and does not establish expectancy.
 
@@ -79,7 +81,7 @@ Not implemented/enabled in this minimal base version. Do not add it until the ba
 ```env
 BOT_MODULE=MEX
 MEX_ENABLED=true
-MEX_MIN_RVOL=1.5
+MEX_MIN_RVOL=1.15
 MEX_MIN_TR_RATIO=1.5
 MEX_LOG_ONLY=false
 MEX_ROUND_TRIP_TAKER_FEE_PCT=0.10
