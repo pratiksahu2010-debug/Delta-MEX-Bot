@@ -110,3 +110,16 @@ def test_mex_duplicate_signal_cannot_be_queued_twice(tmp_path):
     assert not accepted
     assert reason == "symbol_cooldown"
     assert len(store.due_alerts()) == 1
+
+
+def test_log_only_suppresses_only_pending_legacy_mex_outbox_items(tmp_path):
+    store = SignalStore(str(tmp_path / "mex.sqlite3"))
+    now = datetime.now(timezone.utc).isoformat()
+    mex = _payload("BTCUSD", now)
+    orb = {**_payload("ETHUSD", now), "strategy": "ORB"}
+    store.enqueue_alert("legacy-mex", mex)
+    store.enqueue_alert("unrelated-orb", orb)
+
+    assert store.suppress_pending_mex_alerts() == 1
+    due = store.due_alerts()
+    assert [item[0] for item in due] == ["unrelated-orb"]
