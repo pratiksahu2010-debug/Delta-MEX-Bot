@@ -106,6 +106,8 @@ def test_mex_live_signal_uses_trigger_close_without_waiting_for_quote(tmp_path, 
         state = engine.store.mex_state()["states"][0]
         assert state["state"] == "IDLE"
         assert engine.store.outbox_health()["sent"] == 1
+        gates = engine.strategy_diagnostics["MEX"]["mex_gate_counts"]
+        assert gates["breakout_clearance_pass"] == 1
         await engine.rest.close()
 
     asyncio.run(run())
