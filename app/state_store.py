@@ -218,7 +218,7 @@ class SignalStore:
             return True
 
     def suppress_pending_mex_alerts(self) -> int:
-        """Prevent legacy MEX alerts from escaping during the one-week log-only phase."""
+        """Suppress queued MEX alerts while explicit log-only mode is active."""
         now = _utc_now().isoformat()
         ph = "?" if self.backend == "sqlite" else "%s"
         with self._connect() as db:

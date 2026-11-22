@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     mex_min_tr_ratio: float = 2.0
     # Set this to the account's actual round-trip taker fee, in percentage points.
     mex_round_trip_taker_fee_pct: float = 0.10
-    # Keep true for the required one-week log-only validation before Telegram alerts.
+    # Safe default: log-only until explicitly disabled for Telegram signal delivery.
     mex_log_only: bool = True
     mex_min_atr_expansion: float = 1.15
     mex_live_min_eval_interval_seconds: float = 0.75

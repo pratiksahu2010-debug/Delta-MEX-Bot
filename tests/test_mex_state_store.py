@@ -75,7 +75,9 @@ def test_mex_cooldown_expires_after_twelve_five_minute_bars(tmp_path):
 
 def test_mex_global_hourly_cap_is_five_across_all_symbols(tmp_path):
     store = SignalStore(str(tmp_path / "mex.sqlite3"))
-    now = datetime(2026, 11, 22, 10, 0, tzinfo=timezone.utc)
+    # Use the real current time because mex_state() reports its rolling-hour
+    # count relative to the wall clock, not the injected claim timestamp.
+    now = datetime.now(timezone.utc)
     for index in range(5):
         symbol = f"COIN{index}USD"
         stamp = (now - timedelta(minutes=5)).isoformat()
