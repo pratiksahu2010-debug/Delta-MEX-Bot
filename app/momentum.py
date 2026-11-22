@@ -145,6 +145,11 @@ def evaluate_mex(
         return None
     x = _indicators(f)
     c, p = x.iloc[-1], x.iloc[-2]
+    def diagnostic_values(extra):
+        return diagnostic_values({
+            "quote_volume_24h_usd": _round_or_none(quote_volume_24h_usd),
+            **(extra or {}),
+        })
     required = (
         "atr", "tr_ratio", "atr_pct", "rvol", "donchian_high_prior",
         "donchian_low_prior", "ema21", "close_location",
@@ -159,41 +164,41 @@ def evaluate_mex(
     if entry > float(c["donchian_high_prior"]):
         if float(c["tr_ratio"]) + 1e-9 < min_tr_ratio:
             return _reject(diagnostics, "trigger", "tr_ratio_below_minimum",
-                           _values(c, {"min_tr_ratio": min_tr_ratio}))
+                           diagnostic_values({"min_tr_ratio": min_tr_ratio}))
         if float(c["rvol"]) + 1e-9 < min_rvol:
             return _reject(diagnostics, "trigger", "rvol_below_minimum",
-                           _values(c, {"min_rvol": min_rvol}))
+                           diagnostic_values({"min_rvol": min_rvol}))
         if close_location + 1e-9 < MIN_CLOSE_LOCATION_LONG:
             return _reject(diagnostics, "trigger", "close_location_not_strong_long",
-                           _values(c, {"min_close_location": MIN_CLOSE_LOCATION_LONG}))
+                           diagnostic_values({"min_close_location": MIN_CLOSE_LOCATION_LONG}))
         if entry <= float(c["ema21"]):
             return _reject(diagnostics, "trigger", "close_not_above_ema21",
-                           _values(c, {}))
+                           diagnostic_values({}))
         side = "LONG"
     elif entry < float(c["donchian_low_prior"]):
         if float(c["tr_ratio"]) + 1e-9 < min_tr_ratio:
             return _reject(diagnostics, "trigger", "tr_ratio_below_minimum",
-                           _values(c, {"min_tr_ratio": min_tr_ratio}))
+                           diagnostic_values({"min_tr_ratio": min_tr_ratio}))
         if float(c["rvol"]) + 1e-9 < min_rvol:
             return _reject(diagnostics, "trigger", "rvol_below_minimum",
-                           _values(c, {"min_rvol": min_rvol}))
+                           diagnostic_values({"min_rvol": min_rvol}))
         if close_location - 1e-9 > MAX_CLOSE_LOCATION_SHORT:
             return _reject(diagnostics, "trigger", "close_location_not_strong_short",
-                           _values(c, {"max_close_location": MAX_CLOSE_LOCATION_SHORT}))
+                           diagnostic_values({"max_close_location": MAX_CLOSE_LOCATION_SHORT}))
         if entry >= float(c["ema21"]):
             return _reject(diagnostics, "trigger", "close_not_below_ema21",
-                           _values(c, {}))
+                           diagnostic_values({}))
         side = "SHORT"
     else:
         return _reject(diagnostics, "trigger", "no_donchian_breakout",
-                       _values(c, {}))
+                       diagnostic_values({}))
 
     atr_value = float(c["atr"])
     atr_pct = float(c["atr_pct"])
     extension_atr = abs(entry - float(c["ema21"])) / atr_value
     if extension_atr > max_extension_atr + 1e-9:
         return _reject(diagnostics, "safety", "entry_extension_exceeded",
-                       _values(c, {"extension_atr": extension_atr,
+                       diagnostic_values({"extension_atr": extension_atr,
                                    "max_extension_atr": max_extension_atr}))
 
     fee_pct = float(round_trip_taker_fee_pct)
@@ -203,7 +208,7 @@ def evaluate_mex(
     minimum_atr_pct = min_cost_multiple * fee_pct / 100.0
     if atr_pct + 1e-9 < minimum_atr_pct:
         return _reject(diagnostics, "safety", "atr_below_cost_floor",
-                       _values(c, {"minimum_atr_pct": minimum_atr_pct,
+                       diagnostic_values({"minimum_atr_pct": minimum_atr_pct,
                                    "fee_cost_multiple": min_cost_multiple}))
 
     try:
@@ -212,7 +217,7 @@ def evaluate_mex(
         turnover = float("nan")
     if not math.isfinite(turnover) or turnover < min_quote_volume_usd:
         return _reject(diagnostics, "safety", "quote_volume_24h_below_minimum",
-                       _values(c, {"quote_volume_24h_usd": turnover,
+                       diagnostic_values({"quote_volume_24h_usd": turnover,
                                    "min_quote_volume_usd": min_quote_volume_usd}))
 
     stop_floor = 0.8 * atr_value
@@ -222,17 +227,17 @@ def evaluate_mex(
     )
     risk = entry - stop if side == "LONG" else stop - entry
     if not math.isfinite(risk) or risk <= 0:
-        return _reject(diagnostics, "risk", "invalid_stop_distance", _values(c, {}))
+        return _reject(diagnostics, "risk", "invalid_stop_distance", diagnostic_values({}))
     tp1 = entry + risk if side == "LONG" else entry - risk
     tp2 = entry + 2.0 * risk if side == "LONG" else entry - 2.0 * risk
     gross_reward = tp2 - entry if side == "LONG" else entry - tp2
     rr = gross_reward / risk
     if not math.isfinite(rr) or rr + 1e-9 < min_rr_to_tp2:
         return _reject(diagnostics, "safety", "tp2_risk_reward_below_minimum",
-                       _values(c, {"risk_reward_tp2": rr,
+                       diagnostic_values({"risk_reward_tp2": rr,
                                    "min_risk_reward_tp2": min_rr_to_tp2}))
 
-    values = _values(c, {
+    values = diagnostic_values({
         "side": side, "entry": entry, "stop_loss": stop, "tp1": tp1, "tp2": tp2,
         "risk_reward_tp2_net": rr, "quote_volume_24h_usd": turnover,
         "round_trip_taker_fee_pct": fee_pct,
