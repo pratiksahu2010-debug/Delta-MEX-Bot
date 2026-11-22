@@ -133,20 +133,24 @@ class SignalStore:
                 state = "IDLE"
             if state != "IDLE":
                 return False, "symbol_not_idle"
-            cutoff = (now - timedelta(hours=1)).isoformat()
-            count = db.execute(
-                f"SELECT COUNT(*) FROM mex_signal_events WHERE created_at >= {ph}", (cutoff,)
-            ).fetchone()[0]
-            if int(count or 0) >= int(max_per_hour):
-                return False, "global_hourly_signal_limit"
-            insert = (
-                "INSERT OR IGNORE INTO mex_signal_events(signal_key,symbol,side,candle_time,created_at) VALUES (?,?,?,?,?)"
-                if self.backend == "sqlite"
-                else "INSERT INTO mex_signal_events(signal_key,symbol,side,candle_time,created_at) VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING"
-            )
-            cur = db.execute(insert, (signal_key, symbol, side, candle_text, now_text))
-            if cur.rowcount != 1:
-                return False, "duplicate_symbol_candle"
+            # The hourly limit is an alert-delivery limit, not a candidate/logging
+            # limit. Log-only validation must not consume capacity for real Telegram
+            # alerts after live delivery is enabled.
+            if enqueue_alert:
+                cutoff = (now - timedelta(hours=1)).isoformat()
+                count = db.execute(
+                    f"SELECT COUNT(*) FROM mex_signal_events WHERE created_at >= {ph}", (cutoff,)
+                ).fetchone()[0]
+                if int(count or 0) >= int(max_per_hour):
+                    return False, "global_hourly_signal_limit"
+                insert = (
+                    "INSERT OR IGNORE INTO mex_signal_events(signal_key,symbol,side,candle_time,created_at) VALUES (?,?,?,?,?)"
+                    if self.backend == "sqlite"
+                    else "INSERT INTO mex_signal_events(signal_key,symbol,side,candle_time,created_at) VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING"
+                )
+                cur = db.execute(insert, (signal_key, symbol, side, candle_text, now_text))
+                if cur.rowcount != 1:
+                    return False, "duplicate_symbol_candle"
             db.execute(
                 f"UPDATE mex_symbol_state SET state='TRIGGERED',last_side={ph},last_signal_candle={ph},last_breakout_level={ph},updated_at={ph} WHERE symbol={ph}",
                 (side, candle_text, breakout_level, now_text, symbol),
