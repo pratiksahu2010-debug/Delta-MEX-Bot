@@ -1167,6 +1167,11 @@ class SignalEngine:
             return
         candle_close_time = latest.timestamp + timedelta(minutes=5)
         candle_lag = (datetime.now(timezone.utc) - candle_close_time).total_seconds()
+        if candle_lag < 0:
+            diagnostic.update(state="forming", reason="latest_candle_not_closed")
+            log.debug("Skipping forming 5m candle symbol=%s closes_at=%s",
+                      symbol, candle_close_time.isoformat())
+            return
         if candle_lag > self.settings.max_candle_lag_seconds:
             diagnostic.update(state="stale", reason="latest_completed_candle_too_old")
             log.warning("Skipping stale 5m candles symbol=%s lag_seconds=%.1f", symbol, candle_lag)
