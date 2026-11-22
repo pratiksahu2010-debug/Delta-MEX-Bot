@@ -2,6 +2,7 @@ import asyncio
 import hmac
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -283,6 +284,7 @@ async def status():
                 shadow_ml = {"status": "unavailable"}
     return redact_payload({
         "service": "delta-exchange-india-signal-bot",
+        "runtime": {"python": sys.version.split()[0], "implementation": sys.implementation.name},
         "status": report["status"],
         "checked_at": report["checked_at"],
         "engine_task": report["engine_task"],
@@ -335,6 +337,7 @@ async def health():
     engine_ready = bool(report["ready"])
     return redact_payload({
         "service": "delta-exchange-india-signal-bot",
+        "runtime": {"python": sys.version.split()[0], "implementation": sys.implementation.name},
         "status": "ok" if engine_ready else ("starting" if engine is None else "degraded"),
         "signal_only": settings.signal_only,
         "orders_enabled": settings.orders_enabled,
