@@ -48,7 +48,7 @@ def _reject(diagnostics, stage, reason, values=None):
     return None
 
 
-def _episode_columns(on, high, low, depth_rank, min_bars):
+def _episode_columns(on, high, low, depth_rank, depth_pct):
     """Track complete squeeze episodes, including their full high/low range."""
     size = len(on)
     run = np.zeros(size, dtype=int)
@@ -75,7 +75,7 @@ def _episode_columns(on, high, low, depth_rank, min_bars):
                 current_low = min(current_low, float(low[i]))
             current_run += 1
             rank = _finite(depth_rank[i])
-            if rank is not None and rank <= DEFAULT_DEPTH_PCT:
+            if rank is not None and rank <= depth_pct:
                 current_deep += 1
             run[i] = current_run
             episode_high[i] = current_high
@@ -177,7 +177,7 @@ def _indicators(frame, depth_lookback=DEFAULT_DEPTH_LOOKBACK):
         f.high.to_numpy(dtype=float),
         f.low.to_numpy(dtype=float),
         f.depth_rank.to_numpy(dtype=float),
-        DEFAULT_MIN_BARS,
+        DEFAULT_DEPTH_PCT,
     )
     for key, values in episodes.items():
         f[key] = values
