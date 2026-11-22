@@ -102,7 +102,7 @@ class SignalEngine:
             for strategy in ("TPR", "RB", "ORB", "MEX")
         }
         self.mex_v3_shadow_diagnostics = {
-            "evaluated": 0, "candidates": 0, "rejections": 0, "errors": 0,
+            "evaluated": 0, "candidates": 0, "rejections": 0, "errors": 0, "outcomes_seeded": 0,
             "rejections_by_reason": {}, "last_evaluation": None,
             "recent_candidates": [],
         }
@@ -1161,6 +1161,44 @@ class SignalEngine:
                         reason = shadow_diagnostics.get("reason", "unclassified")
                         counts = shadow["rejections_by_reason"]
                         counts[reason] = counts.get(reason, 0) + 1
+
+                    # Persist shadow decisions separately from live MEX records.
+                    # Accepted candidates seed the existing forward-outcome table
+                    # using release-candle close as a simulated entry; no quote,
+                    # Telegram alert, pending live setup, or order is created.
+                    try:
+                        self.journal.record_evaluation(
+                            "MEX_V3_SHADOW", symbol, latest.timestamp.isoformat(),
+                            "setup" if shadow_result else "rejected",
+                            shadow_diagnostics, shadow_result or {},
+                        )
+                        if shadow_result:
+                            simulated_entry_at = (
+                                latest.timestamp + timedelta(minutes=5)
+                            ).isoformat()
+                            self.journal.transition_lifecycle(
+                                "MEX_V3_SHADOW", symbol, latest.timestamp.isoformat(),
+                                "trigger_confirmed",
+                                entry_price=shadow_result["entry_reference"],
+                                event_at=simulated_entry_at,
+                                trigger_price=shadow_result["trigger_price"],
+                                trigger_confirmed_at=simulated_entry_at,
+                                side=shadow_result["side"],
+                                stop_loss=shadow_result["stop_loss"],
+                                target_price=shadow_result["take_profit_1"],
+                                atr=shadow_result["atr"],
+                                horizon_bars=int(getattr(self.settings, "outcome_horizon_bars", 12)),
+                                fee_pct=float(getattr(self.settings, "outcome_fee_pct", 0.0)),
+                                slippage_pct=float(getattr(self.settings, "outcome_slippage_pct", 0.0)),
+                                tp2_r_multiple=float(getattr(self.settings, "outcome_tp2_r_multiple", 2.0)),
+                            )
+                            shadow["outcomes_seeded"] += 1
+                    except Exception as persistence_exc:
+                        shadow["errors"] += 1
+                        shadow["last_persistence_error"] = (
+                            f"{type(persistence_exc).__name__}: {str(persistence_exc)[:160]}"
+                        )
+                        log.exception("Unable to persist MEX V3 shadow evaluation symbol=%s", symbol)
                 except Exception as shadow_exc:
                     shadow["errors"] += 1
                     shadow["last_evaluation"] = {
@@ -1548,6 +1586,8 @@ class SignalEngine:
                     "candidates": shadow["candidates"],
                     "rejections": shadow["rejections"],
                     "errors": shadow["errors"],
+                    "outcomes_seeded": shadow["outcomes_seeded"],
+                    "last_persistence_error": shadow.get("last_persistence_error"),
                     "rejections_by_reason": dict(shadow["rejections_by_reason"]),
                     "last_evaluation": dict(shadow["last_evaluation"]) if shadow["last_evaluation"] else None,
                     "recent_candidates": list(shadow["recent_candidates"]),
