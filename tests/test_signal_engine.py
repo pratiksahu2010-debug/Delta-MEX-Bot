@@ -1129,3 +1129,67 @@ def test_structural_risk_cap_log_exposes_entry_stop_and_risk_atr(tmp_path, caplo
         assert "max_risk_atr=3.0" in caplog.text
         await engine.rest.close()
     asyncio.run(run())
+
+
+def test_mex_state_rejection_journal_diagnostics_are_not_circular(tmp_path, monkeypatch):
+    from app.models import Candle
+
+    async def run():
+        engine, _notifier = make_engine(tmp_path)
+        engine.settings.bot_module = "MEX"
+        engine.settings.mex_enabled = True
+        engine.settings.momentum_symbol_list = ["BTCUSD"]
+        engine.settings.mex_log_only = True
+        engine.settings.candle_poll_interval_seconds = 0.0
+
+        now = datetime.now(timezone.utc)
+        current_bucket = int(now.timestamp() // 300) * 300
+        latest_time = datetime.fromtimestamp(current_bucket - 300, timezone.utc)
+        bars = [
+            Candle(
+                timestamp=latest_time - timedelta(minutes=5 * (249 - i)),
+                open=100, high=102, low=99, close=101, volume=100,
+            )
+            for i in range(250)
+        ]
+
+        async def fake_candles(_symbol, _timeframe, _limit):
+            return bars
+
+        def fake_evaluate(_frame, *, diagnostics, **_kwargs):
+            # The real evaluator shares this values dictionary with result.indicators.
+            values = {"donchian_high_prior": 100.5, "donchian_low_prior": 98.5,
+                      "rvol": 2.0, "tr_ratio": 2.5}
+            diagnostics.update({
+                "stage": "accepted", "reason": "mex_candidate_accepted",
+                "values": values,
+            })
+            return {
+                "strategy": "MEX", "side": "LONG", "entry_reference": 101.0,
+                "trigger_price": 101.0, "stop_loss": 99.0,
+                "take_profit_1": 103.0, "take_profit_2": 105.0,
+                "atr": 1.0, "risk_distance": 2.0, "risk_reward": 2.0,
+                "rvol": 2.0, "tr_ratio": 2.5, "atr_pct": 0.01,
+                "close_location": 0.8, "candle_time": latest_time,
+                "reason": "test candidate", "indicators": values,
+            }
+
+        async def no_context(_symbol):
+            return None
+
+        monkeypatch.setattr(engine.rest, "candles", fake_candles)
+        monkeypatch.setattr("app.signal_engine.evaluate_mex", fake_evaluate)
+        monkeypatch.setattr(engine.store, "claim_mex_signal",
+                            lambda *_args, **_kwargs: (False, "same_breakout_move"))
+        monkeypatch.setattr(engine, "refresh_context", no_context)
+
+        await engine.refresh_symbol("BTCUSD")
+
+        record = engine.journal.list_records(limit=1)[0]
+        assert record["decision"] == "rejected"
+        assert record["diagnostics"]["reason"] == "same_breakout_move"
+        assert record["diagnostics"]["values"]["candidate"]["rvol"] == 2.0
+        assert record["diagnostics"]["values"]["candidate"] is not record["diagnostics"]["values"]
+        await engine.rest.close()
+
+    asyncio.run(run())
