@@ -71,14 +71,13 @@ def test_rvol_uses_only_previous_twenty_completed_bars():
 
 def test_prior_donchian_excludes_the_trigger_candle():
     frame, now = make_frame("LONG")
-    frame.loc[frame.index[-1], "high"] = 105.0
-    frame.loc[frame.index[-1], "close"] = 100.5
     diagnostics = {}
     result = evaluate_mex(
         frame, now=now, quote_volume_24h_usd=250000.0,
         round_trip_taker_fee_pct=0.10, diagnostics=diagnostics,
     )
     assert result is not None, diagnostics
+    assert result["indicators"]["donchian_high_prior"] < frame.iloc[-1]["high"]
 
 
 def test_rejects_fewer_than_250_bars():
