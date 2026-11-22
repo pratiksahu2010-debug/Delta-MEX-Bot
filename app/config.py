@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     rb_min_rvol: float = 1.45
     rb_range_lookback: int = 12
     mex_min_rvol: float = 1.5
-    mex_min_tr_ratio: float = 2.0
+    mex_min_tr_ratio: float = 1.5
     # Set this to the account's actual round-trip taker fee, in percentage points.
     mex_round_trip_taker_fee_pct: float = 0.10
     # Safe default: log-only until explicitly disabled for Telegram signal delivery.
