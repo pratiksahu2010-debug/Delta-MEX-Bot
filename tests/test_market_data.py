@@ -617,3 +617,14 @@ def test_live_candlestick_volume_feed_counts_zero_positive_and_missing_volume():
         "invalid": 0, "stale": 0, "zero_volume": 1, "positive_volume": 1,
     }
     assert [sample["volume"] for sample in diag["recent_samples"]] == [0.0, 12.5]
+
+
+def test_rest_parser_skips_non_positive_ohlc_rows():
+    now = datetime.fromtimestamp(1800000600, timezone.utc)
+    rows = [
+        {"time": 1800000000, "open": 10, "high": 12, "low": 9, "close": 11, "volume": 5},
+        {"time": 1800000300, "open": 11, "high": 12, "low": 0, "close": 12, "volume": 5},
+    ]
+    result = parse_rest_candles({"success": True, "result": rows}, "5m", now)
+    assert len(result) == 1
+    assert result[0].timestamp == datetime.fromtimestamp(1800000000, timezone.utc)
