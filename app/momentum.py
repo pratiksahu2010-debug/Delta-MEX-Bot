@@ -17,10 +17,11 @@ RVOL_LENGTH = 20
 DONCHIAN_LENGTH = 20
 EMA_LENGTH = 21
 MIN_TR_RATIO = 1.5
-MIN_RVOL = 1.5
+MIN_RVOL = 1.15
 MIN_CLOSE_LOCATION_LONG = 0.75
 MAX_CLOSE_LOCATION_SHORT = 0.25
 MAX_EXTENSION_ATR = 2.5
+MIN_BREAKOUT_CLEARANCE_ATR = 0.10
 MIN_ATR_TO_ROUND_TRIP_FEE = 3.0
 MIN_RR_TO_TP2 = 1.5
 MIN_STOP_ATR = 0.8
@@ -128,6 +129,7 @@ def _indicators(frame):
     ).mean()
     candle_range = (f["high"] - f["low"]).replace(0, np.nan)
     f["close_location"] = (f["close"] - f["low"]) / candle_range
+    f["body_ratio"] = (f["close"] - f["open"]).abs() / candle_range
     return f
 
 
@@ -135,6 +137,7 @@ def evaluate_mex(
     frame, *,
     round_trip_taker_fee_pct=0.10,
     min_rvol=MIN_RVOL, min_tr_ratio=MIN_TR_RATIO,
+    min_breakout_clearance_atr=MIN_BREAKOUT_CLEARANCE_ATR,
     max_extension_atr=MAX_EXTENSION_ATR,
     min_cost_multiple=MIN_ATR_TO_ROUND_TRIP_FEE,
     min_rr_to_tp2=MIN_RR_TO_TP2,
@@ -171,7 +174,7 @@ def evaluate_mex(
         return _values(c, extra or {})
     required = (
         "atr", "tr_ratio", "atr_pct", "rvol", "donchian_high_prior",
-        "donchian_low_prior", "ema21", "close_location",
+        "donchian_low_prior", "ema21", "close_location", "body_ratio",
     )
     invalid = [name for name in required if _finite(c[name]) is None]
     if float(c["atr"]) <= 0 or float(c["close"]) <= 0:
@@ -189,6 +192,15 @@ def evaluate_mex(
         if float(c["rvol"]) + 1e-9 < min_rvol:
             return _reject(diagnostics, "trigger", "rvol_below_minimum",
                            diagnostic_values({"min_rvol": min_rvol}))
+        breakout_clearance_atr = (entry - float(c["donchian_high_prior"])) / float(c["atr"])
+        if breakout_clearance_atr + 1e-9 < min_breakout_clearance_atr:
+            return _reject(
+                diagnostics, "trigger", "breakout_clearance_below_minimum",
+                diagnostic_values({
+                    "breakout_clearance_atr": breakout_clearance_atr,
+                    "min_breakout_clearance_atr": min_breakout_clearance_atr,
+                }),
+            )
         if close_location + 1e-9 < MIN_CLOSE_LOCATION_LONG:
             return _reject(diagnostics, "trigger", "close_location_not_strong_long",
                            diagnostic_values({"min_close_location": MIN_CLOSE_LOCATION_LONG}))
@@ -203,6 +215,15 @@ def evaluate_mex(
         if float(c["rvol"]) + 1e-9 < min_rvol:
             return _reject(diagnostics, "trigger", "rvol_below_minimum",
                            diagnostic_values({"min_rvol": min_rvol}))
+        breakout_clearance_atr = (float(c["donchian_low_prior"]) - entry) / float(c["atr"])
+        if breakout_clearance_atr + 1e-9 < min_breakout_clearance_atr:
+            return _reject(
+                diagnostics, "trigger", "breakout_clearance_below_minimum",
+                diagnostic_values({
+                    "breakout_clearance_atr": breakout_clearance_atr,
+                    "min_breakout_clearance_atr": min_breakout_clearance_atr,
+                }),
+            )
         if close_location - 1e-9 > MAX_CLOSE_LOCATION_SHORT:
             return _reject(diagnostics, "trigger", "close_location_not_strong_short",
                            diagnostic_values({"max_close_location": MAX_CLOSE_LOCATION_SHORT}))
@@ -249,11 +270,32 @@ def evaluate_mex(
                        diagnostic_values({"risk_reward_tp2": rr,
                                    "min_risk_reward_tp2": min_rr_to_tp2}))
 
+    body_ratio = float(c["body_ratio"])
+    quality_score = _quality_score(
+        side=side,
+        breakout_clearance_atr=breakout_clearance_atr,
+        rvol=float(c["rvol"]),
+        tr_ratio=float(c["tr_ratio"]),
+        close_location=close_location,
+        extension_atr=extension_atr,
+        max_extension_atr=max_extension_atr,
+        body_ratio=body_ratio,
+    )
+    quality_tier = (
+        "A" if quality_score >= 80 else
+        "B" if quality_score >= 65 else
+        "C" if quality_score >= 50 else "QUALIFIED"
+    )
     values = diagnostic_values({
         "side": side, "entry": entry, "stop_loss": stop, "tp1": tp1, "tp2": tp2,
         "risk_reward_tp2": rr,
         "round_trip_taker_fee_pct": fee_pct,
         "extension_atr": extension_atr,
+        "breakout_clearance_atr": breakout_clearance_atr,
+        "min_breakout_clearance_atr": min_breakout_clearance_atr,
+        "body_ratio": body_ratio,
+        "quality_score": quality_score,
+        "quality_tier": quality_tier,
     })
     if diagnostics is not None:
         diagnostics.clear()
@@ -267,6 +309,10 @@ def evaluate_mex(
         "risk_reward": rr, "rvol": float(c["rvol"]),
         "tr_ratio": float(c["tr_ratio"]), "atr_pct": atr_pct,
         "close_location": close_location,
+        "breakout_clearance_atr": breakout_clearance_atr,
+        "body_ratio": body_ratio,
+        "quality_score": quality_score,
+        "quality_tier": quality_tier,
         "candle_time": c["timestamp"].to_pydatetime(),
         "reason": f"MEX {side}: 5m range break, TR ratio {float(c['tr_ratio']):.2f}, RVOL {float(c['rvol']):.2f}",
         "indicators": values,
@@ -283,7 +329,7 @@ def _finite(value):
 
 def _values(candle, extra):
     keys = ("close", "high", "low", "volume", "rvol_baseline", "atr", "atr_pct",
-            "tr_ratio", "rvol", "close_location", "donchian_high_prior",
+            "tr_ratio", "rvol", "close_location", "body_ratio", "donchian_high_prior",
             "donchian_low_prior", "ema21")
     result = {key: _round_or_none(candle[key]) for key in keys}
     result.update(extra)
@@ -296,6 +342,23 @@ def _round_or_none(value):
         return round(number, 8) if math.isfinite(number) else None
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _quality_score(*, side, breakout_clearance_atr, rvol, tr_ratio,
+                   close_location, extension_atr, max_extension_atr, body_ratio):
+    """Return a ranking score for already-qualified setups; never bypasses a gate."""
+    clamp = lambda value: max(0.0, min(1.0, float(value)))
+    directional_close = close_location if side == "LONG" else 1.0 - close_location
+    components = (
+        20.0 * clamp(breakout_clearance_atr / 0.50),
+        20.0 * clamp((rvol - 1.0) / 1.0),
+        15.0 * clamp((tr_ratio - 1.0) / 1.5),
+        15.0 * clamp((directional_close - 0.50) / 0.50),
+        10.0,  # EMA21 direction is a mandatory pass.
+        10.0 * clamp(1.0 - extension_atr / max_extension_atr),
+        10.0 * clamp(body_ratio / 0.80),
+    )
+    return round(sum(components), 1)
 
 
 def _risk(frame, side, reference, atr_value):
