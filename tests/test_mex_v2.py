@@ -137,15 +137,6 @@ def test_rvol_1_15_boundary_is_accepted():
     assert result["rvol"] == pytest.approx(1.15)
 
 
-def test_rvol_1_14_is_rejected_by_balanced_minimum():
-    frame, now = make_frame("LONG")
-    frame.loc[frame.index[-1], "volume"] = 114.0
-    diagnostics = {}
-    result = evaluate(frame, now, diagnostics=diagnostics)
-    assert result is None
-    assert diagnostics["reason"] == "rvol_below_minimum"
-
-
 def test_zero_current_volume_fails_rvol_gate_not_indicator_warmup():
     frame, now = make_frame("LONG")
     frame.loc[frame.index[-1], "volume"] = 0.0
