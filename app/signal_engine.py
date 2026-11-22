@@ -72,8 +72,6 @@ class SignalEngine:
         self.last_rest_quote_poll_at: str | None = None
         self.last_rest_quote_error: str | None = None
         self.candles: dict[str, list[Candle]] = {}
-        self.live_mex_candles: dict[str, Candle] = {}
-        self.live_mex_last_eval: dict[str, float] = {}
         self.last_evaluated: dict[str, datetime] = {}
         self.scan_cycles = 0
         self.last_scan_cycle_at: str | None = None
@@ -506,6 +504,7 @@ class SignalEngine:
                 "opening_volume", "current_atr", "minimum_range_atr", "maximum_range_atr",
                 "session_open_utc", "current_candle_at", "session_bars", "required_session_bars",
                 "candle_range", "atr", "volume", "open", "high", "low", "close",
+                "flat_bar_class", "previous_close", "same_as_previous_close",
                 "source_candle_quality", "opening_source_quality",
                 "range_zero_range_bar_count", "range_zero_range_zero_volume_count",
                 "range_zero_range_positive_volume_count",
@@ -590,132 +589,11 @@ class SignalEngine:
                 self._record_trigger_event(strategy, symbol, "websocket_disconnect")
             self._reset_quote_confirmation(symbol, "confirmation_reset_websocket_disconnect")
         self.last_quote_exchange_at.clear()
-        # A forming candle cannot be trusted across a socket outage. Discard it
-        # and force REST to repair any missing completed intervals immediately.
+        # Refresh completed REST history after a socket outage; WebSocket L1
+        # reconnects must never promote or evaluate a forming MEX candle.
         for symbol in getattr(self.settings, "momentum_symbol_list", ()):
-            self.live_mex_candles.pop(symbol, None)
-            self.live_mex_last_eval.pop(symbol, None)
             self.last_candle_fetch_at.pop(symbol, None)
-        log.warning("WebSocket disconnected; live MEX candles and quote confirmations reset")
-
-    async def on_live_candle(self, symbol: str, candle: Candle, received: datetime) -> None:
-        # MEX v3 is closed-candle only; forming WebSocket candles are never actionable.
-        return
-        """Evaluate MEX on verified live traded-price OHLCV updates.
-
-        Only the current forming 5m candle is appended to completed REST history.
-        It is never written into the completed-candle cache or used to advance the
-        completed-bar cursor. A fresh L1 quote must still confirm the trigger.
-        """
-        momentum_symbols = set(getattr(self.settings, "momentum_symbol_list", ()))
-        if (not self._module_enabled("MEX") or symbol not in momentum_symbols or not getattr(self.settings, "mex_enabled", True)
-                or not getattr(self.settings, "mex_live_enabled", False)
-                or symbol not in self.candles):
-            return
-        completed = self.candles[symbol]
-        if len(completed) < 60:
-            return
-        last_completed = completed[-1]
-        age = (received - candle.timestamp).total_seconds()
-        if age < -5.0 or age > 300.0:
-            return
-
-        previous_live = self.live_mex_candles.get(symbol)
-        if previous_live is not None and candle.timestamp < previous_live.timestamp:
-            return
-        if previous_live is not None and candle.timestamp > previous_live.timestamp:
-            if (candle.timestamp != previous_live.timestamp + timedelta(minutes=5)
-                    or previous_live.timestamp != last_completed.timestamp + timedelta(minutes=5)):
-                # A skipped interval means this partial candle cannot be promoted.
-                # Force the next REST cycle to repair history before MEX resumes.
-                self.live_mex_candles.pop(symbol, None)
-                self.live_mex_last_eval.pop(symbol, None)
-                self.last_candle_fetch_at.pop(symbol, None)
-                return
-            # A newer 5m bucket proves the previous live bucket has closed.
-            # Promote it to completed in-memory history; REST remains the recovery source.
-            completed = (completed + [previous_live])[-120:]
-            self.candles[symbol] = completed
-            last_completed = previous_live
-            self.live_mex_last_eval.pop(symbol, None)
-        if candle.timestamp <= last_completed.timestamp:
-            return
-        if candle.timestamp != last_completed.timestamp + timedelta(minutes=5):
-            # REST recovery must fill a missing interval before live MEX resumes.
-            self.last_candle_fetch_at.pop(symbol, None)
-            return
-        if previous_live is not None and candle.timestamp == previous_live.timestamp:
-            # Delta updates are cumulative snapshots. Preserve extrema and
-            # non-decreasing traded volume when duplicate/out-of-order frames arrive.
-            if candle.volume < previous_live.volume:
-                return
-            candle = Candle(
-                timestamp=candle.timestamp,
-                open=previous_live.open,
-                high=max(previous_live.high, candle.high),
-                low=min(previous_live.low, candle.low),
-                close=candle.close,
-                volume=candle.volume,
-            )
-        self.live_mex_candles[symbol] = candle
-
-        if (symbol, "MEX") in self.momentum_pending:
-            return
-        now_mono = time.monotonic()
-        min_interval = max(
-            0.0, float(getattr(self.settings, "mex_live_min_eval_interval_seconds", 0.75))
-        )
-        previous_eval = self.live_mex_last_eval.get(symbol, 0.0)
-        if now_mono - previous_eval < min_interval:
-            return
-        self.live_mex_last_eval[symbol] = now_mono
-
-        # RVOL compares full completed bars. Estimate the forming bar's
-        # final volume from cumulative traded volume and elapsed time, with a
-        # 25% minimum elapsed fraction to cap the projection at 4x.
-        elapsed = max(0.0, min(300.0, (received - candle.timestamp).total_seconds()))
-        elapsed_fraction = max(0.25, elapsed / 300.0)
-        volume_projection_factor = 1.0 / elapsed_fraction
-        evaluation_candle = Candle(
-            timestamp=candle.timestamp, open=candle.open, high=candle.high,
-            low=candle.low, close=candle.close,
-            volume=candle.volume * volume_projection_factor,
-        )
-        frame_bars = completed + [evaluation_candle]
-        frame = pd.DataFrame([{
-            "timestamp": bar.timestamp, "open": bar.open, "high": bar.high,
-            "low": bar.low, "close": bar.close, "volume": bar.volume,
-        } for bar in frame_bars])
-        diagnostics = {}
-        try:
-            result = evaluate_mex(
-                frame,
-                min_rvol=float(getattr(self.settings, "mex_min_rvol", 1.15)),
-                min_atr_expansion=float(getattr(self.settings, "mex_min_atr_expansion", 1.15)),
-                diagnostics=diagnostics,
-            )
-            if diagnostics is not None:
-                diagnostics.setdefault("values", {})["live_volume_projection_factor"] = round(
-                    volume_projection_factor, 3
-                )
-            if result:
-                result.setdefault("indicators", {})["live_volume_projection_factor"] = round(
-                    volume_projection_factor, 3
-                )
-            diagnostics["evaluation_source"] = "live_forming"
-            self._record_strategy_evaluation("MEX", candle, result, symbol, diagnostics)
-            if result:
-                self._arm_setup(symbol, "MEX", result, candle)
-                log.info(
-                    "Live MEX candidate symbol=%s side=%s candle=%s volume=%.4f",
-                    symbol, result["side"], candle.timestamp.isoformat(), candle.volume,
-                )
-        except Exception as exc:
-            stats = self.strategy_evaluations["MEX"]
-            stats["errors"] += 1
-            stats["last_error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
-            stats["last_error_at"] = received.isoformat()
-            log.exception("Live MEX evaluation failed symbol=%s", symbol)
+        log.warning("WebSocket disconnected; quote confirmations reset and REST candle refresh scheduled")
 
     async def on_quote(self, symbol: str, quote: Quote, received: datetime) -> None:
         # Delta's exchange timestamp is the last book/trade update time, not
@@ -1191,10 +1069,6 @@ class SignalEngine:
             log.warning("Skipping strategy evaluation due to missing 5m intervals symbol=%s", symbol)
             return
         self.candles[symbol] = bars
-        live_candle = self.live_mex_candles.get(symbol)
-        if live_candle is not None and live_candle.timestamp <= latest.timestamp:
-            self.live_mex_candles.pop(symbol, None)
-            self.live_mex_last_eval.pop(symbol, None)
         diagnostic.update(state="ready", reason=f"{required_bars}_plus_contiguous_fresh_candles", required_bars=required_bars)
         previous_evaluated = self.last_evaluated.get(symbol)
         if previous_evaluated is not None and latest.timestamp <= previous_evaluated:
@@ -1696,8 +1570,6 @@ class SignalEngine:
                 self.stream.last_candlestick_at.isoformat() if self.stream.last_candlestick_at else None
             ),
             "live_candlestick_symbols": sorted(self.stream.last_candlestick_by_symbol),
-            "live_mex_candle_symbols": sorted(self.live_mex_candles),
-            "live_mex_candle_count": len(self.live_mex_candles),
             "last_ws_heartbeat_at": (
                 self.stream.last_heartbeat_at.isoformat() if self.stream.last_heartbeat_at else None
             ),
