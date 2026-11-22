@@ -236,3 +236,48 @@ def test_status_preserves_nested_mex_gate_diagnostics(monkeypatch):
                 pass
 
     asyncio.run(run())
+
+
+def test_status_diagnostics_run_off_event_loop(monkeypatch):
+    async def run():
+        import threading
+        import time
+
+        engine = _healthy_engine()
+        worker_thread_ids = []
+
+        def slow_health():
+            worker_thread_ids.append(threading.get_ident())
+            time.sleep(0.15)
+            return dict(engine_snapshot)
+
+        engine_snapshot = engine.health()
+        engine.health = slow_health
+        _configure(monkeypatch, engine)
+
+        async def worker():
+            await asyncio.Event().wait()
+
+        task = asyncio.create_task(worker())
+        monkeypatch.setattr(main, "engine_task", task)
+        try:
+            loop_thread_id = threading.get_ident()
+            transport = httpx.ASGITransport(app=main.app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                status_task = asyncio.create_task(client.get("/status"))
+                await asyncio.sleep(0.02)
+                ping = await client.get("/ping")
+                response = await status_task
+            assert ping.status_code == 200
+            assert ping.content == b""
+            assert response.status_code == 200
+            assert worker_thread_ids
+            assert worker_thread_ids[0] != loop_thread_id
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(run())
