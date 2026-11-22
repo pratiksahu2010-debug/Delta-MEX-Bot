@@ -78,7 +78,7 @@ class SignalStore:
     def claim_mex_signal(self, signal_key, symbol, side, candle_time, payload, *,
                          max_per_hour=5, cooldown_bars=12, now=None,
                          enqueue_alert=True, breakout_level=None, current_price=None):
-        """Atomically enforce per-symbol cooldown/global hourly cap and enqueue Telegram."""
+        """Atomically deduplicate same-candle claims, enforce the global hourly cap, and enqueue Telegram."""
         now = (now or _utc_now()).astimezone(timezone.utc)
         now_text = now.isoformat()
         candle = datetime.fromisoformat(str(candle_time).replace("Z", "+00:00"))
@@ -86,9 +86,8 @@ class SignalStore:
             candle = candle.replace(tzinfo=timezone.utc)
         candle = candle.astimezone(timezone.utc)
         candle_text = candle.isoformat()
-        cooldown_until = (candle + timedelta(minutes=5 * int(cooldown_bars))).isoformat()
         side = str(side).upper()
-        if side not in {"LONG", "SHORT"} or max_per_hour < 1 or cooldown_bars < 1:
+        if side not in {"LONG", "SHORT"} or max_per_hour < 1:
             raise ValueError("Invalid MEX signal claim arguments")
         try:
             breakout_level = float(breakout_level) if breakout_level is not None else None
@@ -116,23 +115,21 @@ class SignalStore:
                 (symbol, now_text),
             )
             lock_sql = (
-                "SELECT state,cooldown_until,last_side,last_breakout_level FROM mex_symbol_state WHERE symbol=?"
+                "SELECT state,last_signal_candle FROM mex_symbol_state WHERE symbol=?"
                 if self.backend == "sqlite"
-                else "SELECT state,cooldown_until,last_side,last_breakout_level FROM mex_symbol_state WHERE symbol=%s FOR UPDATE"
+                else "SELECT state,last_signal_candle FROM mex_symbol_state WHERE symbol=%s FOR UPDATE"
             )
             row = db.execute(lock_sql, (symbol,)).fetchone()
-            state, saved_cooldown, saved_side, saved_breakout = row[0], row[1], row[2], row[3]
-            if state == "COOLDOWN":
-                if saved_cooldown and candle_text < str(saved_cooldown):
-                    return False, "symbol_cooldown"
-                if saved_breakout is not None:
-                    return False, "same_breakout_move"
+            state, last_signal_candle = row[0], row[1]
+            if last_signal_candle and str(last_signal_candle) == candle_text:
+                return False, "duplicate_symbol_candle"
+            # Legacy COOLDOWN rows are treated as IDLE after this update. There is
+            # deliberately no per-symbol timer or same-breakout re-arm lock.
+            if state != "IDLE":
                 db.execute(f"UPDATE mex_symbol_state SET state='IDLE',updated_at={ph} WHERE symbol={ph}",
                            (now_text, symbol))
-                event(db, "COOLDOWN", "IDLE", "cooldown_expired_legacy_state")
+                event(db, state, "IDLE", "per_symbol_cooldown_disabled")
                 state = "IDLE"
-            if state != "IDLE":
-                return False, "symbol_not_idle"
             # The hourly limit is an alert-delivery limit, not a candidate/logging
             # limit. Log-only validation must not consume capacity for real Telegram
             # alerts after live delivery is enabled.
@@ -157,10 +154,10 @@ class SignalStore:
             )
             event(db, "IDLE", "TRIGGERED", "closed_candle_signal_claimed")
             db.execute(
-                f"UPDATE mex_symbol_state SET state='COOLDOWN',cooldown_until={ph},updated_at={ph} WHERE symbol={ph}",
-                (cooldown_until, now_text, symbol),
+                f"UPDATE mex_symbol_state SET state='IDLE',cooldown_until=NULL,updated_at={ph} WHERE symbol={ph}",
+                (now_text, symbol),
             )
-            event(db, "TRIGGERED", "COOLDOWN", "cooldown_started")
+            event(db, "TRIGGERED", "IDLE", "per_symbol_cooldown_disabled")
             outbox = (
                 """INSERT OR IGNORE INTO alert_outbox
                    (signal_key,payload_json,status,attempts,created_at,next_attempt_at,updated_at)

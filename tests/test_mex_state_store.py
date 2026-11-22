@@ -27,12 +27,12 @@ def test_mex_state_and_outbox_survive_store_restart(tmp_path):
     reopened = SignalStore(str(path))
     state = reopened.mex_state()
     assert state["signals_last_hour"] == 1
-    assert state["states"][0]["state"] == "COOLDOWN"
+    assert state["states"][0]["state"] == "IDLE"
     assert state["states"][0]["last_side"] == "LONG"
     assert reopened.due_alerts()[0][0] == key
 
 
-def test_mex_symbol_cooldown_blocks_repeated_move(tmp_path):
+def test_mex_same_symbol_can_signal_on_next_closed_candle(tmp_path):
     store = SignalStore(str(tmp_path / "mex.sqlite3"))
     now = datetime(2026, 11, 22, 10, 0, tzinfo=timezone.utc)
     candle = now - timedelta(minutes=5)
@@ -42,17 +42,17 @@ def test_mex_symbol_cooldown_blocks_repeated_move(tmp_path):
     )
     assert accepted
 
-    next_candle = candle + timedelta(minutes=55)
+    next_candle = candle + timedelta(minutes=5)
     next_stamp = next_candle.isoformat()
     accepted, reason = store.claim_mex_signal(
         f"BTCUSD:{next_stamp}", "BTCUSD", "LONG", next_stamp,
-        _payload("BTCUSD", next_stamp), now=now + timedelta(minutes=55)
+        _payload("BTCUSD", next_stamp), now=now + timedelta(minutes=5)
     )
-    assert not accepted
-    assert reason == "symbol_cooldown"
+    assert accepted and reason == "accepted"
+    assert store.mex_state()["states"][0]["state"] == "IDLE"
 
 
-def test_mex_cooldown_expires_after_twelve_five_minute_bars(tmp_path):
+def test_mex_no_per_symbol_cooldown_after_new_signal(tmp_path):
     store = SignalStore(str(tmp_path / "mex.sqlite3"))
     now = datetime(2026, 11, 22, 10, 0, tzinfo=timezone.utc)
     candle = now - timedelta(minutes=5)
@@ -69,7 +69,7 @@ def test_mex_cooldown_expires_after_twelve_five_minute_bars(tmp_path):
     )
     assert accepted, reason
     state = store.mex_state()["states"][0]
-    assert state["state"] == "COOLDOWN"
+    assert state["state"] == "IDLE"
     assert state["last_side"] == "SHORT"
 
 
@@ -110,7 +110,7 @@ def test_mex_duplicate_signal_cannot_be_queued_twice(tmp_path):
         key, "BTCUSD", "LONG", stamp, _payload("BTCUSD", stamp), now=now
     )
     assert not accepted
-    assert reason == "symbol_cooldown"
+    assert reason == "duplicate_symbol_candle"
     assert len(store.due_alerts()) == 1
 
 
