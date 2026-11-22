@@ -14,7 +14,7 @@ def _payload(symbol, candle_time):
 def test_mex_state_and_outbox_survive_store_restart(tmp_path):
     path = tmp_path / "mex.sqlite3"
     store = SignalStore(str(path))
-    now = datetime(2026, 11, 22, 10, 0, tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
     candle = now - timedelta(minutes=5)
     candle_text = candle.isoformat()
     key = f"BTCUSD:MEX:LONG:{candle_text}"
