@@ -104,7 +104,7 @@ def _episode_columns(on, high, low, depth_rank, depth_pct):
     }
 
 
-def _indicators(frame, depth_lookback=DEFAULT_DEPTH_LOOKBACK):
+def _indicators(frame, depth_lookback=DEFAULT_DEPTH_LOOKBACK, depth_pct=DEFAULT_DEPTH_PCT):
     f = frame.copy()
     f["atr20"] = atr(f, KC_LENGTH)
     f["adx"], f["plus_di"], f["minus_di"] = adx(f, ADX_LENGTH)
@@ -177,7 +177,7 @@ def _indicators(frame, depth_lookback=DEFAULT_DEPTH_LOOKBACK):
         f.high.to_numpy(dtype=float),
         f.low.to_numpy(dtype=float),
         f.depth_rank.to_numpy(dtype=float),
-        DEFAULT_DEPTH_PCT,
+        depth_pct,
     )
     for key, values in episodes.items():
         f[key] = values
@@ -217,7 +217,7 @@ def evaluate_mex_v3_shadow(
             {"candle_time": latest_open.isoformat()},
         )
 
-    x = _indicators(f, depth_lookback=depth_lookback)
+    x = _indicators(f, depth_lookback=depth_lookback, depth_pct=depth_pct)
     c = x.iloc[-1]
     required = {
         "atr20": c.atr20, "adx": c.adx, "plus_di": c.plus_di,
