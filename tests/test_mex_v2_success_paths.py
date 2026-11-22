@@ -76,7 +76,7 @@ def test_mex_accepts_complete_directional_setup_and_builds_two_r_target(
         frame, adx_min=19.0, min_rvol=1.50, diagnostics=diagnostics
     )
 
-    assert result is not None
+    assert result is not None, diagnostics
     assert result["side"] == side
     assert result["strategy"] == "MEX"
     assert diagnostics["stage"] == "accepted"
