@@ -223,13 +223,11 @@ def evaluate_mex(
         return _reject(diagnostics, "risk", "invalid_stop_distance", _values(c, {}))
     tp1 = entry + risk if side == "LONG" else entry - risk
     tp2 = entry + 2.0 * risk if side == "LONG" else entry - 2.0 * risk
-    fee_fraction = fee_pct / 100.0
-    net_reward = (tp2 - entry if side == "LONG" else entry - tp2) - fee_fraction * (entry + tp2)
-    net_risk = risk + fee_fraction * (entry + stop)
-    rr = net_reward / net_risk if net_risk > 0 else float("-inf")
+    gross_reward = tp2 - entry if side == "LONG" else entry - tp2
+    rr = gross_reward / risk
     if not math.isfinite(rr) or rr < min_rr_to_tp2:
         return _reject(diagnostics, "safety", "tp2_risk_reward_below_minimum",
-                       _values(c, {"risk_reward_tp2_net": rr,
+                       _values(c, {"risk_reward_tp2": rr,
                                    "min_risk_reward_tp2": min_rr_to_tp2}))
 
     values = _values(c, {
