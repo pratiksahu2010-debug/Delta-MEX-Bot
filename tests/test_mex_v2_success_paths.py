@@ -140,4 +140,3 @@ def test_mex_rejects_opposing_di_alignment(monkeypatch, side):
 
     assert result is None
     assert diagnostics["reason"] == "four_indicator_direction_not_aligned"
-}
