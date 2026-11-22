@@ -509,8 +509,9 @@ class SignalEngine:
                 "ema_spread_atr", "ema21_slope_atr", "adx", "adx_min",
                 "risk_atr", "extension_atr", "close_location", "body_atr",
                 "tr_ratio", "min_tr_ratio", "rvol_baseline", "atr_pct", "minimum_atr_pct",
-                "risk_reward_tp2",
-                "min_risk_reward_tp2", "donchian_high_prior", "donchian_low_prior",
+                "risk_reward_tp2", "breakout_clearance_atr",
+                "min_breakout_clearance_atr", "body_ratio", "quality_score",
+                "quality_tier", "min_risk_reward_tp2", "donchian_high_prior", "donchian_low_prior",
                 "range_atr", "candle_body_atr", "candle_range_atr",
                 "range_high", "range_low", "range_lookback", "range_bar_count",
                 "efficiency_ratio", "min_efficiency", "trend_consistency", "min_consistency",
@@ -1211,6 +1212,9 @@ class SignalEngine:
                     round_trip_taker_fee_pct=float(getattr(self.settings, "mex_round_trip_taker_fee_pct", 0.10)),
                     min_rvol=float(getattr(self.settings, "mex_min_rvol", 1.15)),
                     min_tr_ratio=float(getattr(self.settings, "mex_min_tr_ratio", 1.5)),
+                    min_breakout_clearance_atr=float(
+                        getattr(self.settings, "mex_min_breakout_clearance_atr", 0.10)
+                    ),
                     diagnostics=diagnostics,
                 )
                 diagnostics["evaluation_source"] = "completed_candle"
@@ -1221,6 +1225,9 @@ class SignalEngine:
                         "candle_time": latest.timestamp.isoformat(),
                         "entry": result["entry_reference"],
                         "rvol": result["rvol"], "tr_ratio": result["tr_ratio"],
+                        "breakout_clearance_atr": result["breakout_clearance_atr"],
+                        "quality_score": result["quality_score"],
+                        "quality_tier": result["quality_tier"],
                     }
                     log_only = bool(getattr(self.settings, "mex_log_only", True))
                     signal_key = f"{symbol}:MEX:{result['side']}:{latest.timestamp.isoformat()}"
@@ -1230,6 +1237,10 @@ class SignalEngine:
                         "take_profit_1": result["take_profit_1"], "take_profit_2": result["take_profit_2"],
                         "risk_reward": result["risk_reward"], "rvol": result["rvol"],
                         "tr_ratio": result["tr_ratio"], "atr_pct": result["atr_pct"],
+                        "breakout_clearance_atr": result["breakout_clearance_atr"],
+                        "body_ratio": result["body_ratio"],
+                        "quality_score": result["quality_score"],
+                        "quality_tier": result["quality_tier"],
                         "setup_time": latest.timestamp.isoformat(),
                         "trigger_confirmed_at": (latest.timestamp + timedelta(minutes=5)).isoformat(),
                         "reason": result["reason"], "context_15m": "NOT_USED", "atr": result["atr"],
@@ -1736,6 +1747,9 @@ class SignalEngine:
                 "min_bars": 250,
                 "min_rvol": float(getattr(self.settings, "mex_min_rvol", 1.15)),
                 "min_tr_ratio": float(getattr(self.settings, "mex_min_tr_ratio", 1.5)),
+                "min_breakout_clearance_atr": float(
+                    getattr(self.settings, "mex_min_breakout_clearance_atr", 0.10)
+                ),
                 "round_trip_taker_fee_pct": float(getattr(self.settings, "mex_round_trip_taker_fee_pct", 0.10)),
                 "state": self.store.mex_state() if state_store_ok else None,
             },
