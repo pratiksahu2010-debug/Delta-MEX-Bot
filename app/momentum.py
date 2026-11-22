@@ -81,6 +81,8 @@ def _prepare_frame(frame, now=None, diagnostics=None):
         return _reject(diagnostics, "data", "invalid_ohlc_structure")
 
     f = f.iloc[-REQUIRED_BARS:].reset_index(drop=True)
+    if any(int(stamp.timestamp()) % TIMEFRAME_SECONDS != 0 for stamp in f["timestamp"]):
+        return _reject(diagnostics, "data", "off_grid_5m_timestamp")
     gaps = f["timestamp"].diff().dropna().dt.total_seconds()
     if len(gaps) != REQUIRED_BARS - 1 or not (gaps == TIMEFRAME_SECONDS).all():
         return _reject(
