@@ -686,7 +686,7 @@ class SignalEngine:
         try:
             result = evaluate_mex(
                 frame,
-                min_rvol=float(getattr(self.settings, "mex_min_rvol", 1.50)),
+                min_rvol=float(getattr(self.settings, "mex_min_rvol", 1.15)),
                 min_atr_expansion=float(getattr(self.settings, "mex_min_atr_expansion", 1.15)),
                 diagnostics=diagnostics,
             )
@@ -1209,7 +1209,7 @@ class SignalEngine:
                 result = evaluate_mex(
                     frame,
                     round_trip_taker_fee_pct=float(getattr(self.settings, "mex_round_trip_taker_fee_pct", 0.10)),
-                    min_rvol=float(getattr(self.settings, "mex_min_rvol", 1.5)),
+                    min_rvol=float(getattr(self.settings, "mex_min_rvol", 1.15)),
                     min_tr_ratio=float(getattr(self.settings, "mex_min_tr_ratio", 1.5)),
                     diagnostics=diagnostics,
                 )
@@ -1734,7 +1734,7 @@ class SignalEngine:
                 **self.mex_runtime,
                 "log_only": bool(getattr(self.settings, "mex_log_only", True)),
                 "min_bars": 250,
-                "min_rvol": float(getattr(self.settings, "mex_min_rvol", 1.5)),
+                "min_rvol": float(getattr(self.settings, "mex_min_rvol", 1.15)),
                 "min_tr_ratio": float(getattr(self.settings, "mex_min_tr_ratio", 1.5)),
                 "round_trip_taker_fee_pct": float(getattr(self.settings, "mex_round_trip_taker_fee_pct", 0.10)),
                 "state": self.store.mex_state() if state_store_ok else None,
