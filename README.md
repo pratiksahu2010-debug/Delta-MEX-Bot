@@ -39,7 +39,7 @@ Stop-loss is placed beyond the recent 5-candle swing with a 0.15 ATR buffer. Tel
 
 ## Run and deploy
 
-Python 3.11.9. Install \`requirements.txt\`, configure \`.env\`, then run:
+Python 3.11.9 is pinned in the root `.python-version` file and in `render.yaml`. Keep the Render service environment variable `PYTHON_VERSION` set to `3.11.9` too, because an explicit service environment variable takes precedence over the repository file. `/status` and `/health` expose the active interpreter version under `runtime` for verification. Install \`requirements.txt\`, configure \`.env\`, then run:
 
 \`\`\`bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000
