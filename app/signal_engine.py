@@ -1187,6 +1187,8 @@ class SignalEngine:
         previous_evaluated = self.last_evaluated.get(symbol)
         if previous_evaluated is not None and latest.timestamp <= previous_evaluated:
             return
+        if mex_active:
+            self.store.refresh_mex_rearm(symbol, latest.timestamp, latest.close)
 
         current_strategy = "TPR"
         try:
@@ -1203,7 +1205,7 @@ class SignalEngine:
                     quote_volume_24h_usd=self.quote_volume_24h_usd.get(symbol),
                     min_quote_volume_usd=float(getattr(self.settings, "mex_min_24h_quote_volume_usd", 100000.0)),
                     round_trip_taker_fee_pct=float(getattr(self.settings, "mex_round_trip_taker_fee_pct", 0.10)),
-                    min_rvol=float(getattr(self.settings, "mex_min_rvol", 2.0)),
+                    min_rvol=float(getattr(self.settings, "mex_min_rvol", 1.5)),
                     min_tr_ratio=float(getattr(self.settings, "mex_min_tr_ratio", 2.0)),
                     diagnostics=diagnostics,
                 )
@@ -1216,76 +1218,67 @@ class SignalEngine:
                         "entry": result["entry_reference"],
                         "rvol": result["rvol"], "tr_ratio": result["tr_ratio"],
                     }
-                    if bool(getattr(self.settings, "mex_log_only", True)):
+                    log_only = bool(getattr(self.settings, "mex_log_only", True))
+                    signal_key = f"{symbol}:MEX:{result['side']}:{latest.timestamp.isoformat()}"
+                    alert = {
+                        "symbol": symbol, "side": result["side"], "strategy": "MEX",
+                        "entry": result["entry_reference"], "stop_loss": result["stop_loss"],
+                        "take_profit_1": result["take_profit_1"], "take_profit_2": result["take_profit_2"],
+                        "risk_reward": result["risk_reward"], "rvol": result["rvol"],
+                        "tr_ratio": result["tr_ratio"], "atr_pct": result["atr_pct"],
+                        "quote_volume_24h_usd": result["quote_volume_24h_usd"],
+                        "setup_time": latest.timestamp.isoformat(),
+                        "trigger_confirmed_at": (latest.timestamp + timedelta(minutes=5)).isoformat(),
+                        "reason": result["reason"], "context_15m": "NOT_USED", "atr": result["atr"],
+                        "outcome_tp2_r_multiple": 2.0,
+                        "outcome_horizon_bars": int(getattr(self.settings, "outcome_horizon_bars", 12)),
+                        "outcome_fee_pct": float(getattr(self.settings, "mex_round_trip_taker_fee_pct", 0.10)),
+                        "outcome_slippage_pct": float(getattr(self.settings, "outcome_slippage_pct", 0.0)),
+                    }
+                    claimed, claim_reason = self.store.claim_mex_signal(
+                        signal_key, symbol, result["side"], latest.timestamp.isoformat(), alert,
+                        max_per_hour=5, cooldown_bars=12, enqueue_alert=not log_only,
+                        breakout_level=(result["indicators"]["donchian_high_prior"]
+                                        if result["side"] == "LONG"
+                                        else result["indicators"]["donchian_low_prior"]),
+                        current_price=result["entry_reference"],
+                    )
+                    if not claimed:
+                        diagnostics["stage"] = "state"
+                        diagnostics["reason"] = claim_reason
+                        diagnostics.setdefault("values", {})["candidate"] = result["indicators"]
+                        counts = self.mex_runtime["state_rejections"]
+                        counts[claim_reason] = counts.get(claim_reason, 0) + 1
+                        self._record_strategy_evaluation("MEX", latest, None, symbol, diagnostics)
+                        log.info("MEX candidate blocked symbol=%s reason=%s", symbol, claim_reason)
+                    elif log_only:
                         diagnostics["candidate"] = result
                         diagnostics["stage"] = "log_only"
-                        diagnostics["reason"] = "log_only_candidate"
+                        diagnostics["reason"] = "log_only_candidate_state_claimed"
                         self.mex_runtime["log_only_candidates"] += 1
                         self._record_strategy_evaluation("MEX", latest, None, symbol, diagnostics)
-                        log.info(
-                            "MEX LOG-ONLY candidate symbol=%s side=%s entry=%.10g rvol=%.2f tr_ratio=%.2f",
-                            symbol, result["side"], result["entry_reference"],
-                            result["rvol"], result["tr_ratio"],
-                        )
+                        log.info("MEX LOG-ONLY candidate symbol=%s side=%s entry=%.10g rvol=%.2f tr_ratio=%.2f state=claimed",
+                                 symbol, result["side"], result["entry_reference"], result["rvol"], result["tr_ratio"])
                     else:
-                        signal_key = (
-                            f"{symbol}:MEX:{result['side']}:{latest.timestamp.isoformat()}"
-                        )
-                        alert = {
-                            "symbol": symbol, "side": result["side"], "strategy": "MEX",
-                            "entry": result["entry_reference"], "stop_loss": result["stop_loss"],
-                            "take_profit_1": result["take_profit_1"],
-                            "take_profit_2": result["take_profit_2"],
-                            "risk_reward": result["risk_reward"], "rvol": result["rvol"],
-                            "tr_ratio": result["tr_ratio"], "atr_pct": result["atr_pct"],
-                            "quote_volume_24h_usd": result["quote_volume_24h_usd"],
-                            "setup_time": latest.timestamp.isoformat(),
-                            "trigger_confirmed_at": (latest.timestamp + timedelta(minutes=5)).isoformat(),
-                            "reason": result["reason"], "context_15m": "NOT_USED",
-                            "atr": result["atr"], "outcome_tp2_r_multiple": 2.0,
-                            "outcome_horizon_bars": int(getattr(self.settings, "outcome_horizon_bars", 12)),
-                            "outcome_fee_pct": float(getattr(self.settings, "mex_round_trip_taker_fee_pct", 0.10)),
-                            "outcome_slippage_pct": float(getattr(self.settings, "outcome_slippage_pct", 0.0)),
-                        }
-                        claimed, claim_reason = self.store.claim_mex_signal(
-                            signal_key, symbol, result["side"], latest.timestamp.isoformat(),
-                            alert, max_per_hour=5, cooldown_bars=12,
-                        )
-                        if not claimed:
-                            diagnostics["stage"] = "state"
-                            diagnostics["reason"] = claim_reason
-                            diagnostics.setdefault("values", {})["candidate"] = result["indicators"]
-                            counts = self.mex_runtime["state_rejections"]
-                            counts[claim_reason] = counts.get(claim_reason, 0) + 1
-                            self._record_strategy_evaluation("MEX", latest, None, symbol, diagnostics)
-                            log.info("MEX candidate blocked symbol=%s reason=%s", symbol, claim_reason)
-                        else:
-                            self._record_strategy_evaluation("MEX", latest, result, symbol, diagnostics)
-                            self.mex_runtime["signals_claimed"] += 1
-                            try:
-                                self.journal.update_lifecycle(
-                                    "MEX", symbol, latest.timestamp.isoformat(), "trigger_confirmed",
-                                    float(result["entry_reference"]),
-                                    event_at=alert["trigger_confirmed_at"],
-                                    trigger_price=float(result["entry_reference"]),
-                                    trigger_confirmed_at=alert["trigger_confirmed_at"],
-                                    side=result["side"], stop_loss=result["stop_loss"],
-                                    target_price=result["take_profit_1"],
-                                    target_price_2=result["take_profit_2"], atr=result["atr"],
-                                    horizon_bars=alert["outcome_horizon_bars"],
-                                    fee_pct=alert["outcome_fee_pct"],
-                                    slippage_pct=alert["outcome_slippage_pct"],
-                                    tp2_r_multiple=2.0,
-                                )
-                            except Exception:
-                                log.exception("MEX signal queued but journal lifecycle update failed symbol=%s", symbol)
-                            log.info(
-                                "MEX SIGNAL QUEUED symbol=%s side=%s candle=%s entry=%.10g SL=%.10g TP1=%.10g TP2=%.10g",
-                                symbol, result["side"], latest.timestamp.isoformat(),
-                                result["entry_reference"], result["stop_loss"],
-                                result["take_profit_1"], result["take_profit_2"],
+                        self._record_strategy_evaluation("MEX", latest, result, symbol, diagnostics)
+                        self.mex_runtime["signals_claimed"] += 1
+                        try:
+                            self.journal.update_lifecycle(
+                                "MEX", symbol, latest.timestamp.isoformat(), "trigger_confirmed",
+                                float(result["entry_reference"]), event_at=alert["trigger_confirmed_at"],
+                                trigger_price=float(result["entry_reference"]),
+                                trigger_confirmed_at=alert["trigger_confirmed_at"], side=result["side"],
+                                stop_loss=result["stop_loss"], target_price=result["take_profit_1"],
+                                target_price_2=result["take_profit_2"], atr=result["atr"],
+                                horizon_bars=alert["outcome_horizon_bars"], fee_pct=alert["outcome_fee_pct"],
+                                slippage_pct=alert["outcome_slippage_pct"], tp2_r_multiple=2.0,
                             )
-                            await self.deliver_outbox()
+                        except Exception:
+                            log.exception("MEX signal queued but journal lifecycle update failed symbol=%s", symbol)
+                        log.info("MEX SIGNAL QUEUED symbol=%s side=%s candle=%s entry=%.10g SL=%.10g TP1=%.10g TP2=%.10g",
+                                 symbol, result["side"], latest.timestamp.isoformat(), result["entry_reference"],
+                                 result["stop_loss"], result["take_profit_1"], result["take_profit_2"])
+                        await self.deliver_outbox()
                 else:
                     self._record_strategy_evaluation("MEX", latest, None, symbol, diagnostics)
                     log.info(
@@ -1738,7 +1731,7 @@ class SignalEngine:
                 **self.mex_runtime,
                 "log_only": bool(getattr(self.settings, "mex_log_only", True)),
                 "min_bars": 250,
-                "min_rvol": float(getattr(self.settings, "mex_min_rvol", 2.0)),
+                "min_rvol": float(getattr(self.settings, "mex_min_rvol", 1.5)),
                 "min_tr_ratio": float(getattr(self.settings, "mex_min_tr_ratio", 2.0)),
                 "min_quote_volume_24h_usd": float(getattr(self.settings, "mex_min_24h_quote_volume_usd", 100000.0)),
                 "round_trip_taker_fee_pct": float(getattr(self.settings, "mex_round_trip_taker_fee_pct", 0.10)),
