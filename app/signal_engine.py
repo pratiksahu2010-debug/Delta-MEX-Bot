@@ -442,8 +442,8 @@ class SignalEngine:
             if strategy == "MEX":
                 gates = self.strategy_diagnostics[strategy]["mex_gate_counts"]
                 gates["evaluated"] += 1
-                for gate in ("breakout", "tr_ratio", "rvol", "close_location",
-                             "ema21", "extension", "cost", "rr"):
+                for gate in ("breakout", "tr_ratio", "rvol", "breakout_clearance",
+                             "close_location", "ema21", "extension", "cost", "rr"):
                     gates[f"{gate}_pass"] += 1
             stats["setups_armed"] += 1
         else:
