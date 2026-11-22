@@ -60,6 +60,9 @@ def parse_rest_candles(payload: Any, resolution: str, now: datetime | None = Non
         if not all(math.isfinite(value) for value in values) or candle.volume < 0:
             log.warning("Skipping non-finite or negative-volume Delta candle timestamp=%s", ts)
             continue
+        if min(candle.open, candle.high, candle.low, candle.close) <= 0:
+            log.warning("Skipping non-positive OHLC Delta candle timestamp=%s", ts)
+            continue
         # Reject off-grid timestamps instead of creating shifted/overlapping bars.
         if int(ts.timestamp()) % seconds != 0:
             continue
