@@ -95,6 +95,7 @@ class SignalEngine:
                 "mex_gate_counts": {
                     "evaluated": 0, "breakout_pass": 0, "breakout_fail": 0,
                     "tr_ratio_pass": 0, "tr_ratio_fail": 0, "rvol_pass": 0, "rvol_fail": 0,
+                    "breakout_clearance_pass": 0, "breakout_clearance_fail": 0,
                     "close_location_pass": 0, "close_location_fail": 0,
                     "ema21_pass": 0, "ema21_fail": 0, "extension_pass": 0, "extension_fail": 0,
                     "cost_pass": 0, "cost_fail": 0,
@@ -464,6 +465,8 @@ class SignalEngine:
                     failed_gate = "tr_ratio"
                 elif reason == "rvol_below_minimum":
                     failed_gate = "rvol"
+                elif reason == "breakout_clearance_below_minimum":
+                    failed_gate = "breakout_clearance"
                 elif reason.startswith("close_location_"):
                     failed_gate = "close_location"
                 elif reason.startswith("close_not_"):
@@ -474,8 +477,8 @@ class SignalEngine:
                     failed_gate = "cost"
                 elif reason == "tp2_risk_reward_below_minimum":
                     failed_gate = "rr"
-                ordered = ("breakout", "tr_ratio", "rvol", "close_location",
-                           "ema21", "extension", "cost", "rr")
+                ordered = ("breakout", "tr_ratio", "rvol", "breakout_clearance",
+                           "close_location", "ema21", "extension", "cost", "rr")
                 if failed_gate is not None:
                     for gate in ordered:
                         if ordered.index(gate) < ordered.index(failed_gate):
