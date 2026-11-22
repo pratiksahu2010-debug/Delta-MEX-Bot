@@ -69,7 +69,7 @@ def test_mex_no_per_symbol_cooldown_after_new_signal(tmp_path):
     )
     assert accepted, reason
     state = store.mex_state()["states"][0]
-    assert state["state"] == "COOLDOWN"
+    assert state["state"] == "IDLE"
     assert state["last_side"] == "SHORT"
 
 
@@ -110,7 +110,7 @@ def test_mex_duplicate_signal_cannot_be_queued_twice(tmp_path):
         key, "BTCUSD", "LONG", stamp, _payload("BTCUSD", stamp), now=now
     )
     assert not accepted
-    assert reason == "symbol_cooldown"
+    assert reason == "duplicate_symbol_candle"
     assert len(store.due_alerts()) == 1
 
 
