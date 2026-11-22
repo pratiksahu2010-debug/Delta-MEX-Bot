@@ -34,7 +34,7 @@ def _install_shadow_fixture(monkeypatch, *, side="LONG", run=8, deep=8, rvol=2.0
         depth_rank[-(run + 1):-1][:run - deep] = 0.50
 
     if side == "LONG":
-        highs = np.linspace(103.0, 105.0, run)
+        highs = np.linspace(110.0, 105.0, run)
         lows = np.linspace(99.0, 98.0, run)
         frame.loc[frame.index[-(run + 1):-1], "high"] = highs
         frame.loc[frame.index[-(run + 1):-1], "low"] = lows
