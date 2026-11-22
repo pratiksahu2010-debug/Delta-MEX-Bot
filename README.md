@@ -1,56 +1,100 @@
-# Delta Exchange India Signal Bot — MEX V2
+# Delta Exchange India — Minimal MEX Signal Bot
 
-Crypto-only, signal-only Momentum Explosion detector for Delta Exchange India.
+Crypto-only, signal-only Momentum Explosion scanner. Strategy timeframe: **5-minute candles**. No order-placement code is used by this strategy.
 
-## MEX V2 decision model
+## Closed-candle and history rules
 
-The detector uses four decision indicators:
+- Only completed REST 5-minute candles are evaluated. The latest candle must have fully closed; forming WebSocket candlesticks are not subscribed to or evaluated.
+- At least **250 closed bars per symbol** are required.
+- Every interval in the latest 250-bar window must be exactly 300 seconds. A missing, duplicate, or off-grid interval rejects the symbol for that scan.
+- REST requests ask for 320 bars to leave room for filtering and the 250-bar requirement.
 
-- **TTM Squeeze:** Bollinger Bands (20, 2 standard deviations) inside Keltner Channels (EMA 20, 1.5 × ATR 20); a setup requires a squeeze-on previous completed candle followed by a squeeze release.
-- **TTM momentum:** 20-period linear-regression momentum histogram; LONG requires positive and rising momentum, SHORT requires negative and falling momentum.
-- **RVOL:** current completed 5-minute candle volume divided by the average volume of the preceding 20 completed candles; minimum 1.50.
-- **ADX + DI:** ADX(14) minimum 19; +DI must exceed -DI for LONG and -DI must exceed +DI for SHORT.
-- **Session VWAP:** UTC-midnight anchored VWAP; LONG close above VWAP, SHORT close below VWAP.
+## Indicators and trigger
 
-The TTM momentum histogram is part of the TTM Squeeze indicator family, not an additional standalone indicator. ATR is retained only for structural stop-loss sizing and is not a fifth signal filter.
+Only these indicators are used:
 
-## Entry qualification
+- **ATR(14), Wilder smoothing**, seeded with the first 14-bar true-range SMA.
+- **ATR%** = ATR(14) / close.
+- **RVOL** = current completed-bar volume / mean volume of the preceding 20 completed bars (current bar excluded).
+- **Donchian(20)** = highest high / lowest low of the preceding 20 bars (current bar excluded).
+- **EMA(21)**.
 
-A setup also requires a completed 5-minute candle close beyond the preceding 8-candle high/low and a directional candle-quality check. The setup is armed at the breakout candle's high/low. A fresh L1 ask (LONG) or bid (SHORT) must cross and hold the trigger through the existing quote-confirmation lifecycle. Extended entries and structural stops above 3 ATR are rejected.
+Bar-derived values:
 
-Stop-loss is placed beyond the recent 5-candle swing with a 0.15 ATR buffer. Telegram target is 2R where valid. Signals only; no order execution is implemented or enabled.
+- **TR ratio** = current bar true range / previous bar ATR(14).
+- **Close location** = (close - low) / (high - low).
 
-## Data correctness
+LONG requires all of: close above prior Donchian high, TR ratio >= 2.0, RVOL >= 2.0, close location >= 0.75, and close above EMA21.
 
-- Forming WebSocket candles cannot create MEX setups. `MEX_LIVE_ENABLED=false` disables the forming-candle detector path; the detector also rejects any 5-minute candle that has not closed. Live L1 quotes remain enabled for breakout trigger confirmation.
-- RVOL uses actual completed-candle volume; no elapsed-time volume projection is used in the MEX V2 calculation.
-- 5-minute REST history is expanded to 320 bars so the current UTC day's VWAP session is available (up to 288 bars).
-- The scanner's recent 60-bar continuity check, quote freshness, setup persistence, deduplication, Telegram outbox and PostgreSQL production-state requirements are retained.
+SHORT requires all of: close below prior Donchian low, TR ratio >= 2.0, RVOL >= 2.0, close location <= 0.25, and close below EMA21.
+
+## Safety gates
+
+- Extension: absolute distance from close to EMA21 <= 2.5 × ATR(14).
+- Cost: ATR% >= 3 × configured round-trip taker fee.
+- Liquidity: 24-hour quote turnover must be >= the configured USD minimum. The Delta ticker's `turnover_usd` field is preferred; `turnover` is accepted only when `turnover_symbol=USD`. Missing turnover fails closed.
+- TP2 gross reward/risk must be >= 1.5. TP2 is 2R in this strategy.
+
+Defaults are conservative starting values, not a substitute for account-specific fee settings or walk-forward testing:
+
+- `MEX_MIN_RVOL=2.0`
+- `MEX_MIN_TR_RATIO=2.0`
+- `MEX_MIN_24H_QUOTE_VOLUME_USD=100000`
+- `MEX_ROUND_TRIP_TAKER_FEE_PCT=0.10` (percentage points; replace with the actual round-trip taker fee for the account)
+- `MEX_LOG_ONLY=true`
+
+## Entry, stop and targets
+
+- Entry is the trigger candle close.
+- LONG stop = the lower of trigger-bar low and entry minus 0.8 × ATR.
+- SHORT stop = the higher of trigger-bar high and entry plus 0.8 × ATR.
+- TP1 = 1R; TP2 = 2R.
+
+## State and anti-spam
+
+- Per-symbol state is durably stored in PostgreSQL on Render (SQLite locally): IDLE → TRIGGERED → COOLDOWN → IDLE.
+- Cooldown lasts 12 completed 5-minute bars (60 minutes).
+- A global database-serialized cap allows at most five MEX signals in any rolling hour across all symbols.
+- The signal claim, state transition, event record, and Telegram outbox insert are committed atomically. Restarting the process cannot repeat a claimed signal.
+
+## One-week validation before Telegram
+
+**Keep `MEX_LOG_ONLY=true` for at least one week.** Candidates and the first failed gate are written to the signal journal and application logs; no Telegram signal is enqueued during this period.
+
+After the week, review:
+
+1. Candidate count and first-failed-gate distribution by symbol.
+2. Whether the 24-hour turnover and round-trip fee settings match the intended market/account.
+3. Walk-forward results on real Delta 5-minute history, with no look-ahead and a chronological train/test split.
+4. Net expectancy after round-trip taker fees and realistic slippage, not win rate alone.
+5. Signal frequency, cooldown behavior, and the global hourly cap.
+
+Only after that review should `MEX_LOG_ONLY=false` be set to enable Telegram delivery. Signal-only safety remains mandatory: `SIGNAL_ONLY=true`, `ORDERS_ENABLED=false`.
+
+## Optional squeeze-release path
+
+Not implemented/enabled in this minimal base version. Do not add it until the base module has passed the one-week log-only review and walk-forward testing.
 
 ## Environment
 
-- \`BOT_MODULE=MEX\`
-- \`ADX_MIN=19\`
-- \`MEX_MIN_RVOL=1.50\`
-- \`SIGNAL_ONLY=true\`
-- \`ORDERS_ENABLED=false\`
+```env
+BOT_MODULE=MEX
+MEX_ENABLED=true
+MEX_MIN_RVOL=2.0
+MEX_MIN_TR_RATIO=2.0
+MEX_MIN_24H_QUOTE_VOLUME_USD=100000
+MEX_ROUND_TRIP_TAKER_FEE_PCT=0.10
+MEX_LOG_ONLY=true
+SIGNAL_ONLY=true
+ORDERS_ENABLED=false
+PYTHON_VERSION=3.11.9
+```
 
-\`MEX_MIN_ATR_EXPANSION\` remains accepted for backwards-compatible configuration but is no longer a MEX signal gate.
+Use a dedicated PostgreSQL `DATABASE_URL` for Render production. Do not share the MEX state database with another bot.
 
-## Run and deploy
+## Run
 
-Python 3.11.9. Install \`requirements.txt\`, configure \`.env\`, then run:
-
-\`\`\`bash
+```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000
-\`\`\`
-
-For Render production, configure a dedicated PostgreSQL \`DATABASE_URL\`; do not share the MEX state database with another bot.
-
-## Tests
-
-Run:
-
-\`\`\`bash
-pytest -q tests/test_mex_v2.py
-\`\`\`
+pytest -q
+```
