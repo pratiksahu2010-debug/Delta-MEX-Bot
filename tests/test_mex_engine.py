@@ -38,7 +38,7 @@ def _engine(tmp_path, log_only):
         state_db_path=str(tmp_path / "mex-engine.sqlite3"),
         symbol_list=["BTCUSD"], momentum_symbol_list=["BTCUSD"],
         tpr_rb_symbol_list=[], bot_module="MEX", mex_enabled=True,
-        mex_log_only=log_only, mex_min_rvol=1.5, mex_min_tr_ratio=2.0,
+        mex_log_only=log_only, mex_min_rvol=1.15, mex_min_tr_ratio=2.0,
         mex_round_trip_taker_fee_pct=0.10,
         candle_poll_interval_seconds=0.0, max_candle_lag_seconds=600,
         quote_max_age_seconds=3.0, signal_max_age_bars=2,
@@ -106,6 +106,8 @@ def test_mex_live_signal_uses_trigger_close_without_waiting_for_quote(tmp_path, 
         state = engine.store.mex_state()["states"][0]
         assert state["state"] == "IDLE"
         assert engine.store.outbox_health()["sent"] == 1
+        gates = engine.strategy_diagnostics["MEX"]["mex_gate_counts"]
+        assert gates["breakout_clearance_pass"] == 1
         await engine.rest.close()
 
     asyncio.run(run())

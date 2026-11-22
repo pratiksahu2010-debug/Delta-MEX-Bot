@@ -95,6 +95,7 @@ class SignalEngine:
                 "mex_gate_counts": {
                     "evaluated": 0, "breakout_pass": 0, "breakout_fail": 0,
                     "tr_ratio_pass": 0, "tr_ratio_fail": 0, "rvol_pass": 0, "rvol_fail": 0,
+                    "breakout_clearance_pass": 0, "breakout_clearance_fail": 0,
                     "close_location_pass": 0, "close_location_fail": 0,
                     "ema21_pass": 0, "ema21_fail": 0, "extension_pass": 0, "extension_fail": 0,
                     "cost_pass": 0, "cost_fail": 0,
@@ -441,8 +442,8 @@ class SignalEngine:
             if strategy == "MEX":
                 gates = self.strategy_diagnostics[strategy]["mex_gate_counts"]
                 gates["evaluated"] += 1
-                for gate in ("breakout", "tr_ratio", "rvol", "close_location",
-                             "ema21", "extension", "cost", "rr"):
+                for gate in ("breakout", "tr_ratio", "rvol", "breakout_clearance",
+                             "close_location", "ema21", "extension", "cost", "rr"):
                     gates[f"{gate}_pass"] += 1
             stats["setups_armed"] += 1
         else:
@@ -464,6 +465,8 @@ class SignalEngine:
                     failed_gate = "tr_ratio"
                 elif reason == "rvol_below_minimum":
                     failed_gate = "rvol"
+                elif reason == "breakout_clearance_below_minimum":
+                    failed_gate = "breakout_clearance"
                 elif reason.startswith("close_location_"):
                     failed_gate = "close_location"
                 elif reason.startswith("close_not_"):
@@ -474,8 +477,8 @@ class SignalEngine:
                     failed_gate = "cost"
                 elif reason == "tp2_risk_reward_below_minimum":
                     failed_gate = "rr"
-                ordered = ("breakout", "tr_ratio", "rvol", "close_location",
-                           "ema21", "extension", "cost", "rr")
+                ordered = ("breakout", "tr_ratio", "rvol", "breakout_clearance",
+                           "close_location", "ema21", "extension", "cost", "rr")
                 if failed_gate is not None:
                     for gate in ordered:
                         if ordered.index(gate) < ordered.index(failed_gate):
@@ -509,8 +512,9 @@ class SignalEngine:
                 "ema_spread_atr", "ema21_slope_atr", "adx", "adx_min",
                 "risk_atr", "extension_atr", "close_location", "body_atr",
                 "tr_ratio", "min_tr_ratio", "rvol_baseline", "atr_pct", "minimum_atr_pct",
-                "risk_reward_tp2",
-                "min_risk_reward_tp2", "donchian_high_prior", "donchian_low_prior",
+                "risk_reward_tp2", "breakout_clearance_atr",
+                "min_breakout_clearance_atr", "body_ratio", "quality_score",
+                "quality_tier", "min_risk_reward_tp2", "donchian_high_prior", "donchian_low_prior",
                 "range_atr", "candle_body_atr", "candle_range_atr",
                 "range_high", "range_low", "range_lookback", "range_bar_count",
                 "efficiency_ratio", "min_efficiency", "trend_consistency", "min_consistency",
@@ -686,7 +690,7 @@ class SignalEngine:
         try:
             result = evaluate_mex(
                 frame,
-                min_rvol=float(getattr(self.settings, "mex_min_rvol", 1.50)),
+                min_rvol=float(getattr(self.settings, "mex_min_rvol", 1.15)),
                 min_atr_expansion=float(getattr(self.settings, "mex_min_atr_expansion", 1.15)),
                 diagnostics=diagnostics,
             )
@@ -1209,8 +1213,11 @@ class SignalEngine:
                 result = evaluate_mex(
                     frame,
                     round_trip_taker_fee_pct=float(getattr(self.settings, "mex_round_trip_taker_fee_pct", 0.10)),
-                    min_rvol=float(getattr(self.settings, "mex_min_rvol", 1.5)),
+                    min_rvol=float(getattr(self.settings, "mex_min_rvol", 1.15)),
                     min_tr_ratio=float(getattr(self.settings, "mex_min_tr_ratio", 1.5)),
+                    min_breakout_clearance_atr=float(
+                        getattr(self.settings, "mex_min_breakout_clearance_atr", 0.10)
+                    ),
                     diagnostics=diagnostics,
                 )
                 diagnostics["evaluation_source"] = "completed_candle"
@@ -1221,6 +1228,9 @@ class SignalEngine:
                         "candle_time": latest.timestamp.isoformat(),
                         "entry": result["entry_reference"],
                         "rvol": result["rvol"], "tr_ratio": result["tr_ratio"],
+                        "breakout_clearance_atr": result.get("breakout_clearance_atr"),
+                        "quality_score": result.get("quality_score"),
+                        "quality_tier": result.get("quality_tier"),
                     }
                     log_only = bool(getattr(self.settings, "mex_log_only", True))
                     signal_key = f"{symbol}:MEX:{result['side']}:{latest.timestamp.isoformat()}"
@@ -1230,6 +1240,10 @@ class SignalEngine:
                         "take_profit_1": result["take_profit_1"], "take_profit_2": result["take_profit_2"],
                         "risk_reward": result["risk_reward"], "rvol": result["rvol"],
                         "tr_ratio": result["tr_ratio"], "atr_pct": result["atr_pct"],
+                        "breakout_clearance_atr": result.get("breakout_clearance_atr"),
+                        "body_ratio": result.get("body_ratio"),
+                        "quality_score": result.get("quality_score"),
+                        "quality_tier": result.get("quality_tier"),
                         "setup_time": latest.timestamp.isoformat(),
                         "trigger_confirmed_at": (latest.timestamp + timedelta(minutes=5)).isoformat(),
                         "reason": result["reason"], "context_15m": "NOT_USED", "atr": result["atr"],
@@ -1734,8 +1748,11 @@ class SignalEngine:
                 **self.mex_runtime,
                 "log_only": bool(getattr(self.settings, "mex_log_only", True)),
                 "min_bars": 250,
-                "min_rvol": float(getattr(self.settings, "mex_min_rvol", 1.5)),
+                "min_rvol": float(getattr(self.settings, "mex_min_rvol", 1.15)),
                 "min_tr_ratio": float(getattr(self.settings, "mex_min_tr_ratio", 1.5)),
+                "min_breakout_clearance_atr": float(
+                    getattr(self.settings, "mex_min_breakout_clearance_atr", 0.10)
+                ),
                 "round_trip_taker_fee_pct": float(getattr(self.settings, "mex_round_trip_taker_fee_pct", 0.10)),
                 "state": self.store.mex_state() if state_store_ok else None,
             },

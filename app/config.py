@@ -30,8 +30,9 @@ class Settings(BaseSettings):
     rb_enabled: bool = True
     rb_min_rvol: float = 1.45
     rb_range_lookback: int = 12
-    mex_min_rvol: float = 1.5
+    mex_min_rvol: float = 1.15
     mex_min_tr_ratio: float = 1.5
+    mex_min_breakout_clearance_atr: float = 0.10
     # Set this to the account's actual round-trip taker fee, in percentage points.
     mex_round_trip_taker_fee_pct: float = 0.10
     # Safe default: log-only until explicitly disabled for Telegram signal delivery.
@@ -165,6 +166,7 @@ class Settings(BaseSettings):
         float_thresholds = (
             self.adx_min, self.orb_min_rvol,
             self.rb_min_rvol, self.mex_min_rvol, self.mex_min_tr_ratio,
+            self.mex_min_breakout_clearance_atr,
             self.mex_round_trip_taker_fee_pct,
             self.mex_min_atr_expansion,
             self.mex_live_min_eval_interval_seconds, self.quote_max_age_seconds,
@@ -175,6 +177,7 @@ class Settings(BaseSettings):
                 or self.adx_min < 0 or self.orb_min_rvol <= 0
                 or self.rb_min_rvol <= 0 or self.rb_range_lookback < 8
                 or self.mex_min_rvol <= 0 or self.mex_min_tr_ratio <= 0
+                or self.mex_min_breakout_clearance_atr <= 0
                 or self.mex_round_trip_taker_fee_pct <= 0
                 or self.mex_min_atr_expansion <= 0
                 or self.mex_live_min_eval_interval_seconds < 0
