@@ -109,3 +109,32 @@ def test_mex_live_signal_uses_trigger_close_without_waiting_for_quote(tmp_path, 
         await engine.rest.close()
 
     asyncio.run(run())
+
+
+def test_mex_scanner_does_not_consume_forming_candle_before_its_close(tmp_path, monkeypatch):
+    async def run():
+        engine = _engine(tmp_path, True)
+        closed_bars = _closed_history()
+        forming_bars = [
+            Candle(timestamp=bar.timestamp + timedelta(minutes=5), open=bar.open,
+                   high=bar.high, low=bar.low, close=bar.close, volume=bar.volume)
+            for bar in closed_bars
+        ]
+        async def candles(*_args, **_kwargs):
+            return forming_bars
+        async def tickers():
+            return [{"symbol": "BTCUSD", "turnover_usd": 250000.0}]
+        monkeypatch.setattr(engine.rest, "candles", candles)
+        monkeypatch.setattr(engine.rest, "tickers", tickers)
+        await engine.refresh_symbol("BTCUSD")
+        assert "BTCUSD" not in engine.last_evaluated
+        assert engine.candle_diagnostics["BTCUSD"]["reason"] == "latest_candle_not_closed"
+        # Once the bar is closed, the same timestamp can be evaluated normally.
+        async def closed_candles(*_args, **_kwargs):
+            return closed_bars
+        monkeypatch.setattr(engine.rest, "candles", closed_candles)
+        await engine.refresh_symbol("BTCUSD")
+        assert engine.last_evaluated["BTCUSD"] == closed_bars[-1].timestamp
+        assert engine.mex_runtime["candidates"] == 1
+        await engine.rest.close()
+    asyncio.run(run())
