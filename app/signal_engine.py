@@ -1047,17 +1047,9 @@ class SignalEngine:
             self._update_ticker_snapshot(rows, now)
 
     def _update_ticker_snapshot(self, rows, received: datetime) -> None:
-        snapshot = {}
-        active = set(self.active_symbols or self.configured_symbols)
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            symbol = str(row.get("symbol") or "").strip().upper()
-            if symbol not in active:
-                continue
-            # Ticker snapshots are used for quote freshness/fallback only;
-            # 24h turnover never controls fixed-universe symbol eligibility.
-            self.ticker_snapshot_at = received
+        # This timestamp is operational metadata only. MEX never reads 24h
+        # turnover or uses it to include/exclude a configured symbol.
+        self.ticker_snapshot_at = received
 
     async def refresh_context(self, symbol: str) -> None:
         now = datetime.now(timezone.utc)
