@@ -282,8 +282,9 @@ def _finite(value):
 
 
 def _values(candle, extra):
-    keys = ("close", "high", "low", "atr", "atr_pct", "tr_ratio", "rvol",
-            "close_location", "donchian_high_prior", "donchian_low_prior", "ema21")
+    keys = ("close", "high", "low", "volume", "rvol_baseline", "atr", "atr_pct",
+            "tr_ratio", "rvol", "close_location", "donchian_high_prior",
+            "donchian_low_prior", "ema21")
     result = {key: _round_or_none(candle[key]) for key in keys}
     result.update(extra)
     return result
