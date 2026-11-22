@@ -1090,21 +1090,43 @@ class SignalEngine:
         # completed-candle evaluation across the 120-symbol universe.
         now = datetime.now(timezone.utc)
         poll_interval = max(0.0, float(getattr(self.settings, "candle_poll_interval_seconds", 30.0)))
-        previous_fetch = self.last_candle_fetch_at.get(symbol)
-        if previous_fetch and (now - previous_fetch).total_seconds() < poll_interval:
-            return
-        attempted_at = datetime.now(timezone.utc)
-        self.last_candle_fetch_at[symbol] = attempted_at
-        diagnostic = self.candle_diagnostics.setdefault(symbol, {})
-        diagnostic["last_attempt_at"] = attempted_at.isoformat()
         mex_active = (
             self._module_enabled("MEX")
             and getattr(self.settings, "mex_enabled", True)
             and symbol in getattr(self.settings, "momentum_symbol_list", ())
         )
+        previous_fetch = self.last_candle_fetch_at.get(symbol)
+        if previous_fetch and (now - previous_fetch).total_seconds() < poll_interval:
+            return
+
+        # MEX only evaluates completed 5m bars. Once a contiguous, fresh history
+        # has been accepted, another 320-bar REST download cannot produce a new
+        # MEX decision until the next 5m candle has closed. Wait for that close
+        # instead of downloading the same history every 30 seconds. Keep the
+        # normal retry cadence for gaps, stale/warming data, and failed requests.
+        if mex_active:
+            cached_bars = self.candles.get(symbol)
+            if cached_bars:
+                cached_diagnostic = self.candle_diagnostics.get(symbol, {})
+                retry_needed = (
+                    cached_diagnostic.get("last_attempt_status") == "error"
+                    or cached_diagnostic.get("state") in {
+                        "gap", "stale", "fetch_error", "no_data", "warming",
+                        "forming", "regressed",
+                    }
+                    or cached_diagnostic.get("reason") != "250_plus_contiguous_fresh_candles"
+                )
+                next_completed_bar_due = (
+                    cached_bars[-1].timestamp + timedelta(minutes=10, seconds=2)
+                )
+                if not retry_needed and now < next_completed_bar_due:
+                    return
+
+        attempted_at = datetime.now(timezone.utc)
+        self.last_candle_fetch_at[symbol] = attempted_at
+        diagnostic = self.candle_diagnostics.setdefault(symbol, {})
+        diagnostic["last_attempt_at"] = attempted_at.isoformat()
         try:
-            if mex_active:
-                await self._refresh_ticker_snapshot()
             bars = await self.rest.candles(symbol, "5m", 320)
         except Exception as exc:
             diagnostic["last_attempt_status"] = "error"
