@@ -1,43 +1,20 @@
-import numpy as np
-import pandas as pd
-
-from app.momentum import evaluate_mex
+"""The old TTM-squeeze regression is superseded by the minimal MEX rules."""
+from test_mex_v2 import make_frame, evaluate
 
 
-def test_mex_squeeze_release_without_structure_break_is_rejected(monkeypatch):
-    import app.momentum as momentum
+def test_current_bar_is_excluded_from_prior_20_bar_donchian_range():
+    frame, now = make_frame("LONG")
+    result = evaluate(frame, now)
+    assert result is not None
+    assert result["indicators"]["donchian_high_prior"] < frame.iloc[-1]["high"]
 
-    count = 80
-    stamps = pd.date_range("2026-11-15T18:00:00Z", periods=count, freq="5min")
-    frame = pd.DataFrame({
-        "timestamp": stamps,
-        "open": np.full(count, 100.0),
-        "high": np.full(count, 101.7),
-        "low": np.full(count, 99.5),
-        "close": np.full(count, 100.2),
-        "volume": np.full(count, 100.0),
-    })
-    frame.loc[79, ["open", "high", "low", "close", "volume"]] = [
-        100.3, 100.7, 100.1, 100.5, 150.0
-    ]
 
-    def indicators(data):
-        out = data.copy()
-        values = {
-            "atr": 2.0, "adx": 25.0, "plus_di": 30.0, "minus_di": 10.0,
-            "vwap": 100.0, "vwap_session_bars": 80, "rvol": 1.5,
-            "ttm_momentum": 0.5,
-        }
-        for key, value in values.items():
-            out[key] = value
-        out.loc[out.index[-2], "ttm_momentum"] = 0.4
-        out["squeeze_on"] = False
-        out.loc[out.index[-2], "squeeze_on"] = True
-        out["squeeze_release"] = False
-        out.loc[out.index[-1], "squeeze_release"] = True
-        return out
-
-    monkeypatch.setattr(momentum, "_indicators", indicators)
+def test_gap_in_250_bar_window_is_a_hard_rejection():
+    frame, now = make_frame("LONG")
+    frame.loc[150:, "timestamp"] += __import__("datetime").timedelta(minutes=5)
+    from app.momentum import evaluate_mex
     diagnostics = {}
-    assert evaluate_mex(frame, diagnostics=diagnostics) is None
-    assert diagnostics["reason"] == "breakout_close_not_above_range"
+    assert evaluate_mex(frame, now=now, quote_volume_24h_usd=250000,
+                        round_trip_taker_fee_pct=0.10,
+                        diagnostics=diagnostics) is None
+    assert diagnostics["reason"] == "gap_in_required_250_bars"
