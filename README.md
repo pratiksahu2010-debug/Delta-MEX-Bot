@@ -25,6 +25,7 @@ Bar-derived values:
 - **Close location** = (close - low) / (high - low).
 - **Breakout clearance** = distance from the close beyond the prior Donchian boundary, divided by ATR(14); minimum 0.10 ATR.
 - **Body ratio** = absolute candle body / full candle range; recorded for setup-quality ranking, not a mandatory rejection gate.
+- **Quality score** (0–100) ranks candidates that already passed every mandatory gate. It is informational only and never rescues a failed setup or blocks a qualified one.
 
 LONG requires all of: close at least 0.10 ATR above prior Donchian high, TR ratio >= 1.5, RVOL >= 1.15, close location >= 0.75, and close above EMA21.
 
@@ -40,6 +41,7 @@ SHORT requires all of: close at least 0.10 ATR below prior Donchian low, TR rati
 Defaults are conservative starting values, not a substitute for account-specific fee settings or walk-forward testing:
 
 - `MEX_MIN_RVOL=1.15`
+- `MEX_MIN_BREAKOUT_CLEARANCE_ATR=0.10`
 - `MEX_MIN_TR_RATIO=1.5`
 - `MEX_ROUND_TRIP_TAKER_FEE_PCT=0.10` (percentage points; replace with the actual round-trip taker fee for the account)
 - `MEX_LOG_ONLY=true`
@@ -55,6 +57,7 @@ Defaults are conservative starting values, not a substitute for account-specific
 
 - Per-symbol state is durably stored in PostgreSQL on Render (SQLite locally).
 - There is no timer-based per-symbol cooldown. The same symbol can qualify again on a later completed 5-minute candle; duplicate alerts for the same symbol and candle remain blocked.
+- The current production path is direct breakout only. Retest entries require their own persisted setup lifecycle and are intentionally not emitted as duplicate alerts yet.
 - A global database-serialized cap allows at most five MEX signals in any rolling hour across all symbols.
 - The signal claim, state transition, event record, and Telegram outbox insert are committed atomically. Restarting the process cannot repeat a claimed signal.
 
