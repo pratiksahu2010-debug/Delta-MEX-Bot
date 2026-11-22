@@ -205,3 +205,70 @@ def test_delivery_record_reports_outbox_and_sent_signal_rows_without_payload(tmp
     assert sent["sent_signal_recorded"] is True
     assert sent["outbox_sent_at"] == sent["sent_signal_at"]
     assert sent["attempts"] == 1
+
+
+def test_mex_cooldown_requires_price_reentry_before_same_move_can_rearm(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    store = SignalStore(str(tmp_path / "mex-rearm.sqlite3"))
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    candle = now - timedelta(minutes=5)
+    payload = {**sample_payload(), "strategy": "MEX"}
+    accepted, reason = store.claim_mex_signal(
+        "BTCUSD:MEX:LONG:first", "BTCUSD", "LONG", candle.isoformat(), payload,
+        now=now, enqueue_alert=False, breakout_level=100.0, current_price=101.0)
+    assert accepted and reason == "accepted"
+    assert store.due_alerts() == []
+    after_cooldown = candle + timedelta(minutes=60)
+    blocked, reason = store.claim_mex_signal(
+        "BTCUSD:MEX:LONG:repeat", "BTCUSD", "LONG", after_cooldown.isoformat(), payload,
+        now=now + timedelta(minutes=55), enqueue_alert=False,
+        breakout_level=100.0, current_price=102.0)
+    assert not blocked and reason == "same_breakout_move"
+    assert store.refresh_mex_rearm("BTCUSD", after_cooldown, 99.0) is True
+    accepted, reason = store.claim_mex_signal(
+        "BTCUSD:MEX:LONG:second-leg", "BTCUSD", "LONG",
+        (after_cooldown + timedelta(minutes=5)).isoformat(), payload,
+        now=now + timedelta(minutes=60), enqueue_alert=False,
+        breakout_level=100.0, current_price=101.0)
+    assert accepted and reason == "accepted"
+    assert store.mex_state()["signals_last_hour"] == 2
+    assert store.due_alerts() == []
+
+
+def test_mex_log_only_claims_obey_global_hourly_cap(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    store = SignalStore(str(tmp_path / "mex-hourly.sqlite3"))
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    payload = {**sample_payload(), "strategy": "MEX"}
+    for index in range(5):
+        symbol = f"SYM{index}USD"
+        accepted, reason = store.claim_mex_signal(
+            f"{symbol}:MEX:LONG:{index}", symbol, "LONG",
+            (now - timedelta(minutes=5)).isoformat(), {**payload, "symbol": symbol},
+            now=now, enqueue_alert=False, breakout_level=100.0, current_price=101.0)
+        assert accepted and reason == "accepted"
+    blocked, reason = store.claim_mex_signal(
+        "SIXTHUSD:MEX:LONG:6", "SIXTHUSD", "LONG",
+        (now - timedelta(minutes=5)).isoformat(), payload,
+        now=now, enqueue_alert=False, breakout_level=100.0, current_price=101.0)
+    assert not blocked and reason == "global_hourly_signal_limit"
+    assert store.mex_state()["signals_last_hour"] == 5
+    assert store.due_alerts() == []
+
+
+def test_mex_legacy_outbox_suppression_uses_bound_like_pattern(tmp_path, monkeypatch):
+    store = SignalStore(str(tmp_path / "mex-suppress.sqlite3"))
+    captured = {}
+    class Cursor:
+        rowcount = 2
+    class FakeConnection:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def execute(self, query, params):
+            captured["query"], captured["params"] = query, params
+            return Cursor()
+    store.backend = "postgresql"
+    monkeypatch.setattr(store, "_connect", lambda: FakeConnection())
+    assert store.suppress_pending_mex_alerts() == 2
+    assert "LIKE %s" in captured["query"]
+    assert captured["params"][1] == '%"strategy":"MEX"%'

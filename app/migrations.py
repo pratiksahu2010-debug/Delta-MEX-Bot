@@ -631,6 +631,10 @@ def _migration_11_add_minimal_mex_state(db, backend: str) -> None:
     db.execute("CREATE INDEX IF NOT EXISTS idx_mex_state_events_symbol_time ON mex_state_events(symbol,created_at)")
 
 
+def _migration_12_add_mex_breakout_rearm_level(db, backend: str) -> None:
+    _add_column_if_missing(db, backend, "mex_symbol_state", "last_breakout_level", "REAL")
+
+
 MIGRATIONS: tuple[tuple[int, str, Callable], ...] = (
     (1, "create_base_signal_schema", _migration_1_create_base_schema),
     (2, "add_lifecycle_telemetry_and_outbox_leases", _migration_2_add_lifecycle_and_outbox_leases),
@@ -643,6 +647,7 @@ MIGRATIONS: tuple[tuple[int, str, Callable], ...] = (
     (9, "create_point_in_time_shadow_ml_tables", _migration_9_create_shadow_ml_tables),
     (10, "add_canonical_neon_storage_schema", _migration_10_add_canonical_neon_storage),
     (11, "add_minimal_mex_signal_state", _migration_11_add_minimal_mex_state),
+    (12, "add_mex_breakout_rearm_level", _migration_12_add_mex_breakout_rearm_level),
 )
 
 
