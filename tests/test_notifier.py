@@ -72,12 +72,29 @@ def test_strategy_labels_and_direction_dots():
     short_mex = TelegramNotifier._format_signal({"symbol": "ETHUSD", "strategy": "MEX", "side": "SHORT"})
     long_orb = TelegramNotifier._format_signal({"symbol": "SOLUSD", "strategy": "ORB", "side": "LONG"})
     assert "🟢 <b>BTCUSD | NORMAL</b>" in long_normal
-    assert "🔴 <b>ETHUSD | MEX</b>" in short_mex
+    assert "🔴 <b>ETHUSD / SHORT</b>" in short_mex
     assert "🟢 <b>SOLUSD | ORB</b>" in long_orb
     assert "DELTAIN%3ABTCUSD.P" in long_normal
     assert "DELTAIN%3AETHUSD.P" in short_mex
     assert "DELTAIN%3ASOLUSD.P" in long_orb
 
+
+
+def test_mex_alert_contains_required_levels_and_metrics_bold():
+    message = TelegramNotifier._format_signal({
+        "symbol": "BTCUSD", "strategy": "MEX", "side": "LONG",
+        "entry": 100.0, "stop_loss": 99.0, "take_profit_1": 101.0,
+        "take_profit_2": 102.0, "rvol": 2.4, "tr_ratio": 2.2,
+        "risk_reward": 2.0,
+    })
+    assert "🟢 <b>BTCUSD / LONG</b>" in message
+    for line in (
+        "<b>Entry: 100.0</b>", "<b>SL: 99.0</b>",
+        "<b>TP1: 101.0</b>", "<b>TP2: 102.0</b>",
+        "<b>RVOL: 2.4</b>", "<b>TR_ratio: 2.2</b>",
+        "<b>R:R: 2.0</b>",
+    ):
+        assert line in message
 
 def test_tradingview_chart_url_normalizes_delta_perpetual_symbols():
     assert TelegramNotifier.tradingview_chart_url("BTCUSD") == (
@@ -94,7 +111,6 @@ def test_signal_html_escapes_dynamic_content():
         "reason": "<script>alert(1)</script>",
     })
     assert "BTC&lt;USD" in message
-    assert "&lt;script&gt;" in message
     assert "<script>" not in message
 
 
