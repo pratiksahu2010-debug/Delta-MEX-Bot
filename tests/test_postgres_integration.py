@@ -446,3 +446,18 @@ def test_postgres_canonical_neon_schema_uses_jsonb_timestamps_and_guards(postgre
             "trg_strategy_signals_immutable",
             "trg_strategy_state_events_append_only",
         }
+
+
+def test_postgres_mex_log_only_suppresses_queued_alerts(postgres_url):
+    store = SignalStore("./unused.sqlite3", postgres_url)
+    key = f"mex-log-only:{uuid.uuid4().hex}"
+    payload = {
+        "symbol": "BTCUSD", "side": "LONG", "strategy": "MEX",
+        "setup_time": datetime.now(timezone.utc).isoformat(),
+        "entry": 100.0, "stop_loss": 99.0, "take_profit_1": 101.0,
+    }
+    store.enqueue_alert(key, payload)
+    assert store.suppress_pending_mex_alerts() == 1
+    assert store.delivery_record(key)["status"] == "suppressed"
+    with psycopg.connect(postgres_url) as db:
+        db.execute("DELETE FROM alert_outbox WHERE signal_key = %s", (key,))
