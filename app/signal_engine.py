@@ -589,6 +589,8 @@ class SignalEngine:
         log.warning("WebSocket disconnected; live MEX candles and quote confirmations reset")
 
     async def on_live_candle(self, symbol: str, candle: Candle, received: datetime) -> None:
+        # MEX v3 is closed-candle only; forming WebSocket candles are never actionable.
+        return
         """Evaluate MEX on verified live traded-price OHLCV updates.
 
         Only the current forming 5m candle is appended to completed REST history.
