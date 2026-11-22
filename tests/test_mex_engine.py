@@ -51,7 +51,7 @@ def _engine(tmp_path, log_only):
     return SignalEngine(settings, FakeNotifier())
 
 
-def test_mex_log_only_records_candidate_without_telegram_or_state(tmp_path, monkeypatch):
+def test_mex_log_only_records_candidate_and_persists_state_without_telegram(tmp_path, monkeypatch):
     async def run():
         engine = _engine(tmp_path, True)
         bars = _closed_history()
@@ -70,9 +70,12 @@ def test_mex_log_only_records_candidate_without_telegram_or_state(tmp_path, monk
         assert engine.mex_runtime["log_only_candidates"] == 1
         assert engine.notifier.alerts == []
         assert engine.store.due_alerts() == []
-        assert engine.store.mex_state()["states"] == []
+        mex_state = engine.store.mex_state()
+        assert mex_state["signals_last_hour"] == 1
+        assert mex_state["states"][0]["state"] == "COOLDOWN"
+        assert mex_state["states"][0]["last_breakout_level"] is not None
         record = engine.journal.latest_record()
-        assert record["reason"] == "log_only_candidate"
+        assert record["reason"] == "log_only_candidate_state_claimed"
         assert record["decision"] == "rejected"
         await engine.rest.close()
 
