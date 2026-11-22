@@ -41,9 +41,10 @@ def test_ttm_squeeze_columns_and_release_state_are_calculated():
     indicators = _indicators(frame)
 
     for column in (
-        "bb_upper", "bb_lower", "kc_upper", "kc_lower",
-        "squeeze_on", "squeeze_release", "ttm_momentum",
-        "rvol", "adx", "plus_di", "minus_di", "vwap",
+        "bb_upper", "bb_lower", "bb_width", "kc_upper", "kc_lower",
+        "kc_width", "squeeze_ratio", "squeeze_on", "squeeze_release",
+        "ttm_momentum", "rvol", "volume_average", "adx", "plus_di",
+        "minus_di", "vwap", "vwap_session_volume",
     ):
         assert column in indicators.columns
 
@@ -66,3 +67,31 @@ def test_mex_requires_squeeze_release():
     assert result is None
     # The low-range fixture is deliberately not a breakout release.
     assert diagnostics["reason"] == "ttm_squeeze_not_released"
+
+
+
+def test_zero_rvol_baseline_has_specific_diagnostic():
+    frame = _frame()
+    # The current candle trades, but the preceding 20 completed candles have
+    # zero volume. This is not an ADX or squeeze failure.
+    frame.loc[frame.index[-21:-1], "volume"] = 0.0
+    diagnostics = {}
+
+    result = evaluate_mex(frame, adx_min=19, min_rvol=1.5, diagnostics=diagnostics)
+
+    assert result is None
+    assert diagnostics["reason"] == "rvol_zero_or_missing_volume_baseline"
+    assert diagnostics["values"]["current_volume"] > 0
+    assert diagnostics["values"]["volume_average_previous_20"] == 0.0
+
+
+def test_squeeze_rejection_reports_compression_ratios():
+    frame = _frame()
+    diagnostics = {}
+
+    result = evaluate_mex(frame, diagnostics=diagnostics)
+
+    assert result is None
+    assert diagnostics["reason"] == "ttm_squeeze_not_released"
+    assert "squeeze_ratio_previous" in diagnostics["values"]
+    assert "squeeze_ratio_current" in diagnostics["values"]
