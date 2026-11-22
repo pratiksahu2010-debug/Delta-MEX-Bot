@@ -99,6 +99,16 @@ def test_rejects_any_gap_inside_required_250_bar_window():
     assert diagnostics["reason"] == "gap_in_required_250_bars"
 
 
+def test_rejects_off_grid_5m_timestamps():
+    frame, now = make_frame("LONG")
+    frame.loc[frame.index[-1], "timestamp"] += timedelta(minutes=1)
+    diagnostics = {}
+    result = evaluate_mex(frame, now=now, quote_volume_24h_usd=250000.0,
+                          round_trip_taker_fee_pct=0.10, diagnostics=diagnostics)
+    assert result is None
+    assert diagnostics["reason"] == "off_grid_5m_timestamp"
+
+
 def test_rejects_forming_latest_bar():
     frame, _ = make_frame("LONG")
     diagnostics = {}
