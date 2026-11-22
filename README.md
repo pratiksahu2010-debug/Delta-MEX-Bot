@@ -62,21 +62,13 @@ Defaults are conservative starting values, not a substitute for account-specific
 - Data gaps, stale history, warmup, forming candles, and REST errors retain the configured retry cadence so recovery is not hidden.
 - 15-minute context remains informational and is refreshed separately.
 
-## One-week validation before Telegram
+## Telegram delivery and validation
 
-**Keep `MEX_LOG_ONLY=true` for at least one week.** Candidates and the first failed gate are written to the signal journal and application logs; no Telegram signal is enqueued during this period.
-
-After the week, review:
-
-1. Candidate count and first-failed-gate distribution by symbol.
-2. Whether the configured round-trip fee matches the intended account fee tier.
-3. Walk-forward results on real Delta 5-minute history, with no look-ahead and a chronological train/test split.
-4. Net expectancy after round-trip taker fees and realistic slippage, not win rate alone.
-5. Signal frequency, cooldown behavior, and the global hourly cap.
-
-The detector replay script evaluates historical OHLCV triggers only. It is not a P&L backtest and must not be presented as expectancy; use chronological out-of-sample testing with realistic fees and slippage before relying on results.
-
-Only after that review should `MEX_LOG_ONLY=false` be set to enable Telegram delivery. Signal-only safety remains mandatory: `SIGNAL_ONLY=true`, `ORDERS_ENABLED=false`.
+- `MEX_LOG_ONLY=false` enables Telegram alerts for qualified MEX candidates. Set it to `true` only when intentionally running a no-alert validation period.
+- Telegram delivery requires both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. The durable outbox retries temporary delivery failures and records confirmed sends.
+- Log-only candidates still claim per-symbol cooldown and count against the global five-signals-per-rolling-hour cap. They are not replayed as alerts after log-only mode is disabled. Wait for the existing cooldown/hourly window to expire before expecting new live alerts.
+- Keep `SIGNAL_ONLY=true` and `ORDERS_ENABLED=false` at all times. Telegram alerts do not place orders.
+- Review candidate/rejection counts, fee assumptions, and chronological out-of-sample results with realistic fees and slippage. The replay script is not a P&L backtest and does not establish expectancy.
 
 ## Optional squeeze-release path
 
@@ -89,6 +81,7 @@ BOT_MODULE=MEX
 MEX_ENABLED=true
 MEX_MIN_RVOL=1.5
 MEX_MIN_TR_RATIO=2.0
+MEX_LOG_ONLY=false
 MEX_ROUND_TRIP_TAKER_FEE_PCT=0.10
 MEX_LOG_ONLY=true
 SIGNAL_ONLY=true
