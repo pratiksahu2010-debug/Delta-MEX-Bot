@@ -505,6 +505,9 @@ class SignalEngine:
                 "range_zero_range_positive_volume_count",
                 "ema_spread_atr", "ema21_slope_atr", "adx", "adx_min",
                 "risk_atr", "extension_atr", "close_location", "body_atr",
+                "tr_ratio", "min_tr_ratio", "rvol_baseline", "atr_pct", "minimum_atr_pct",
+                "quote_volume_24h_usd", "min_quote_volume_usd", "risk_reward_tp2",
+                "min_risk_reward_tp2", "donchian_high_prior", "donchian_low_prior",
                 "range_atr", "candle_body_atr", "candle_range_atr",
                 "range_high", "range_low", "range_lookback", "range_bar_count",
                 "efficiency_ratio", "min_efficiency", "trend_consistency", "min_consistency",
@@ -1279,6 +1282,12 @@ class SignalEngine:
                             await self.deliver_outbox()
                 else:
                     self._record_strategy_evaluation("MEX", latest, None, symbol, diagnostics)
+                    log.info(
+                        "MEX candidate rejected symbol=%s candle=%s first_failed_gate=%s evidence=%s",
+                        symbol, latest.timestamp.isoformat(),
+                        diagnostics.get("reason", "unclassified"),
+                        diagnostics.get("values", {}),
+                    )
 
             self.last_evaluated[symbol] = latest.timestamp
         except Exception as exc:
