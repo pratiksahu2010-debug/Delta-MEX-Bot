@@ -1195,8 +1195,6 @@ class SignalEngine:
         previous_evaluated = self.last_evaluated.get(symbol)
         if previous_evaluated is not None and latest.timestamp <= previous_evaluated:
             return
-        if mex_active:
-            self.store.refresh_mex_rearm(symbol, latest.timestamp, latest.close)
 
         current_strategy = "TPR"
         try:
@@ -1242,7 +1240,7 @@ class SignalEngine:
                     }
                     claimed, claim_reason = self.store.claim_mex_signal(
                         signal_key, symbol, result["side"], latest.timestamp.isoformat(), alert,
-                        max_per_hour=5, cooldown_bars=12, enqueue_alert=not log_only,
+                        max_per_hour=5, enqueue_alert=not log_only,
                         breakout_level=(result["indicators"]["donchian_high_prior"]
                                         if result["side"] == "LONG"
                                         else result["indicators"]["donchian_low_prior"]),
