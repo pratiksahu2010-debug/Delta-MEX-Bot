@@ -9,8 +9,8 @@ from app.momentum import evaluate_mex
 @pytest.mark.parametrize(
     ("volume", "expected_class", "expected_reason"),
     [
-        (0.0, "no_trade", "zero_range_no_volume"),
-        (125.0, "traded_at_one_price", "zero_range_positive_volume"),
+        (0.0, "no_trade", "zero_range_trigger_candle"),
+        (125.0, "traded_at_one_price", "zero_range_trigger_candle"),
     ],
 )
 def test_mex_classifies_zero_range_trigger_candle_without_accepting_it(
