@@ -3,7 +3,13 @@ from datetime import datetime, timedelta, timezone
 
 from app.models import Candle
 from app.signal_engine import SignalEngine
-from test_signal_engine import FakeNotifier
+class FakeNotifier:
+    def __init__(self):
+        self.alerts = []
+
+    async def send_signal(self, alert, feedback_token=""):
+        self.alerts.append(alert)
+        return True
 
 
 def _closed_history():
