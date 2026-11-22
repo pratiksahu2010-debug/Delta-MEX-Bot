@@ -39,7 +39,6 @@ def _engine(tmp_path, log_only):
         symbol_list=["BTCUSD"], momentum_symbol_list=["BTCUSD"],
         tpr_rb_symbol_list=[], bot_module="MEX", mex_enabled=True,
         mex_log_only=log_only, mex_min_rvol=1.5, mex_min_tr_ratio=2.0,
-        mex_min_24h_quote_volume_usd=100000.0,
         mex_round_trip_taker_fee_pct=0.10,
         candle_poll_interval_seconds=0.0, max_candle_lag_seconds=600,
         quote_max_age_seconds=3.0, signal_max_age_bars=2,
@@ -60,7 +59,7 @@ def test_mex_log_only_records_candidate_and_persists_state_without_telegram(tmp_
             return bars
 
         async def tickers():
-            return [{"symbol": "BTCUSD", "turnover_usd": 250000.0}]
+            return [{"symbol": "BTCUSD"}]
 
         monkeypatch.setattr(engine.rest, "candles", candles)
         monkeypatch.setattr(engine.rest, "tickers", tickers)
@@ -91,7 +90,7 @@ def test_mex_live_signal_uses_trigger_close_without_waiting_for_quote(tmp_path, 
             return bars
 
         async def tickers():
-            return [{"symbol": "BTCUSD", "turnover_usd": 250000.0}]
+            return [{"symbol": "BTCUSD"}]
 
         monkeypatch.setattr(engine.rest, "candles", candles)
         monkeypatch.setattr(engine.rest, "tickers", tickers)
@@ -123,7 +122,7 @@ def test_mex_scanner_does_not_consume_forming_candle_before_its_close(tmp_path, 
         async def candles(*_args, **_kwargs):
             return forming_bars
         async def tickers():
-            return [{"symbol": "BTCUSD", "turnover_usd": 250000.0}]
+            return [{"symbol": "BTCUSD"}]
         monkeypatch.setattr(engine.rest, "candles", candles)
         monkeypatch.setattr(engine.rest, "tickers", tickers)
         await engine.refresh_symbol("BTCUSD")
