@@ -100,12 +100,17 @@ def _indicators(frame):
     f["bb_std"] = f.close.rolling(BB_LENGTH, min_periods=BB_LENGTH).std(ddof=0)
     f["bb_upper"] = f.bb_mid + BB_STDDEV * f.bb_std
     f["bb_lower"] = f.bb_mid - BB_STDDEV * f.bb_std
+    f["bb_width"] = f.bb_upper - f.bb_lower
 
     # Keltner Channels: EMA(20) +/- 1.5 * ATR(20).
     f["kc_mid"] = f.close.ewm(span=KC_LENGTH, adjust=False, min_periods=KC_LENGTH).mean()
     f["kc_atr"] = atr(f, KC_LENGTH)
     f["kc_upper"] = f.kc_mid + KC_ATR_MULTIPLE * f.kc_atr
     f["kc_lower"] = f.kc_mid - KC_ATR_MULTIPLE * f.kc_atr
+    f["kc_width"] = f.kc_upper - f.kc_lower
+    # Diagnostic only: width ratio helps explain compression proximity; the
+    # actual squeeze gate remains the stricter BB-inside-KC boundary test.
+    f["squeeze_ratio"] = f.bb_width / f.kc_width.replace(0, np.nan)
     f["squeeze_on"] = (f.bb_upper < f.kc_upper) & (f.bb_lower > f.kc_lower)
     f["squeeze_release"] = f.squeeze_on.shift(1, fill_value=False) & ~f.squeeze_on
 
@@ -130,11 +135,13 @@ def _indicators(frame):
     # Crypto VWAP resets at 00:00 UTC. A full session needs up to 288 5m bars;
     # the caller requests 320 so the current UTC session is represented fully.
     f["vwap"] = np.nan
+    f["vwap_session_volume"] = 0.0
     session_date = f.timestamp.iloc[-1].date()
     session_mask = f.timestamp.dt.date == session_date
     session = f.loc[session_mask]
     if not session.empty:
         f.loc[session_mask, "vwap"] = vwap(session)
+        f.loc[session_mask, "vwap_session_volume"] = session.volume.fillna(0).cumsum()
     f["vwap_session_bars"] = 0
     f.loc[session_mask, "vwap_session_bars"] = np.arange(1, len(session) + 1)
     return f
@@ -178,22 +185,78 @@ def evaluate_mex(frame, *, adx_min=ADX_MIN_DEFAULT, min_rvol=1.50,
     f = _indicators(f)
     c, p = f.iloc[-1], f.iloc[-2]
 
-    required_values = (
-        c.atr, c.adx, c.plus_di, c.minus_di, c.rvol, c.vwap,
-        c.ttm_momentum, p.ttm_momentum, c.vwap_session_bars,
+    # Report the actual missing/invalid input rather than collapsing all
+    # warmup and zero-volume cases into one opaque rejection reason.
+    if _finite(c.atr) is None or float(c.atr) <= 0:
+        return _reject(
+            diagnostics, "indicators", "atr_nonpositive_or_invalid",
+            {"atr": c.atr, "bars": len(f), "candle_time": c.timestamp.isoformat()},
+        )
+
+    if _finite(c.rvol) is None:
+        baseline = _finite(c.volume_average)
+        reason = (
+            "rvol_zero_or_missing_volume_baseline"
+            if baseline is None or baseline <= 0
+            else "rvol_invalid"
+        )
+        return _reject(
+            diagnostics, "indicators", reason,
+            {"rvol": c.rvol, "current_volume": c.volume,
+             "volume_average_previous_20": c.volume_average,
+             "previous_20_volume_sum": (
+                 float(f.volume.iloc[-RVOL_LENGTH-1:-1].sum())
+                 if len(f) >= RVOL_LENGTH + 1 else None
+             ),
+             "bars": len(f), "candle_time": c.timestamp.isoformat()},
+        )
+
+    if _finite(c.vwap) is None:
+        session_volume = _finite(c.vwap_session_volume)
+        reason = (
+            "vwap_zero_session_volume"
+            if session_volume is None or session_volume <= 0
+            else "vwap_invalid"
+        )
+        return _reject(
+            diagnostics, "indicators", reason,
+            {"vwap": c.vwap, "vwap_session_volume": c.vwap_session_volume,
+             "vwap_session_bars": c.vwap_session_bars,
+             "candle_time": c.timestamp.isoformat()},
+        )
+
+    remaining_values = (
+        c.adx, c.plus_di, c.minus_di, c.ttm_momentum, p.ttm_momentum,
+        c.vwap_session_bars,
     )
-    if any(_finite(value) is None for value in required_values) or float(c.atr) <= 0:
+    invalid_values = [
+        name for name, value in zip(
+            ("adx", "plus_di", "minus_di", "ttm_momentum",
+             "previous_ttm_momentum", "vwap_session_bars"),
+            remaining_values,
+        ) if _finite(value) is None
+    ]
+    if invalid_values:
         return _reject(
             diagnostics, "indicators", "indicator_warmup_or_invalid",
-            {"atr": c.atr, "adx": c.adx, "rvol": c.rvol,
-             "vwap": c.vwap, "ttm_momentum": c.ttm_momentum},
+            {"invalid_indicators": invalid_values, "adx": c.adx,
+             "plus_di": c.plus_di, "minus_di": c.minus_di,
+             "ttm_momentum": c.ttm_momentum,
+             "previous_ttm_momentum": p.ttm_momentum,
+             "vwap_session_bars": c.vwap_session_bars},
         )
 
     if not bool(c.squeeze_release):
         return _reject(
             diagnostics, "squeeze", "ttm_squeeze_not_released",
             {"squeeze_previous": bool(p.squeeze_on),
-             "squeeze_current": bool(c.squeeze_on)},
+             "squeeze_current": bool(c.squeeze_on),
+             "squeeze_ratio_previous": p.squeeze_ratio,
+             "squeeze_ratio_current": c.squeeze_ratio,
+             "bb_width_previous": p.bb_width,
+             "kc_width_previous": p.kc_width,
+             "bb_width_current": c.bb_width,
+             "kc_width_current": c.kc_width},
         )
 
     if float(c.rvol) < float(min_rvol):
