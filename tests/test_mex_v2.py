@@ -27,8 +27,7 @@ def make_frame(side="LONG", count=250):
 
 def evaluate(frame, now, **kwargs):
     return evaluate_mex(
-        frame, now=now, quote_volume_24h_usd=250000.0,
-        min_quote_volume_usd=100000.0,
+        frame, now=now,
         round_trip_taker_fee_pct=0.10, diagnostics=kwargs.pop("diagnostics", {}),
         **kwargs,
     )
@@ -73,7 +72,7 @@ def test_prior_donchian_excludes_the_trigger_candle():
     frame, now = make_frame("LONG")
     diagnostics = {}
     result = evaluate_mex(
-        frame, now=now, quote_volume_24h_usd=250000.0,
+        frame, now=now,
         round_trip_taker_fee_pct=0.10, diagnostics=diagnostics,
     )
     assert result is not None, diagnostics
@@ -83,7 +82,7 @@ def test_prior_donchian_excludes_the_trigger_candle():
 def test_rejects_fewer_than_250_bars():
     frame, now = make_frame("LONG", count=249)
     diagnostics = {}
-    result = evaluate_mex(frame, now=now, quote_volume_24h_usd=250000.0,
+    result = evaluate_mex(frame, now=now,
                           round_trip_taker_fee_pct=0.10, diagnostics=diagnostics)
     assert result is None
     assert diagnostics["reason"] == "insufficient_closed_bars"
@@ -93,7 +92,7 @@ def test_rejects_any_gap_inside_required_250_bar_window():
     frame, now = make_frame("LONG")
     frame.loc[100:, "timestamp"] += timedelta(minutes=5)
     diagnostics = {}
-    result = evaluate_mex(frame, now=now, quote_volume_24h_usd=250000.0,
+    result = evaluate_mex(frame, now=now,
                           round_trip_taker_fee_pct=0.10, diagnostics=diagnostics)
     assert result is None
     assert diagnostics["reason"] == "gap_in_required_250_bars"
@@ -103,7 +102,7 @@ def test_rejects_off_grid_5m_timestamps():
     frame, now = make_frame("LONG")
     frame.loc[frame.index[-1], "timestamp"] += timedelta(minutes=1)
     diagnostics = {}
-    result = evaluate_mex(frame, now=now, quote_volume_24h_usd=250000.0,
+    result = evaluate_mex(frame, now=now,
                           round_trip_taker_fee_pct=0.10, diagnostics=diagnostics)
     assert result is None
     assert diagnostics["reason"] == "off_grid_5m_timestamp"
@@ -114,7 +113,7 @@ def test_rejects_forming_latest_bar():
     diagnostics = {}
     result = evaluate_mex(
         frame, now=frame.iloc[-1].timestamp.to_pydatetime() + timedelta(minutes=4),
-        quote_volume_24h_usd=250000.0, round_trip_taker_fee_pct=0.10,
+        round_trip_taker_fee_pct=0.10,
         diagnostics=diagnostics,
     )
     assert result is None
@@ -176,15 +175,14 @@ def test_cost_gate_rejects_atr_below_three_times_round_trip_fee():
     assert diagnostics["reason"] == "atr_below_cost_floor"
 
 
-def test_liquidity_gate_fails_closed_when_24h_turnover_missing_or_low():
+def test_fixed_universe_symbol_is_not_rejected_for_missing_turnover():
     frame, now = make_frame("LONG")
     diagnostics = {}
-    result = evaluate_mex(
-        frame, now=now, quote_volume_24h_usd=None,
-        round_trip_taker_fee_pct=0.10, diagnostics=diagnostics,
-    )
-    assert result is None
-    assert diagnostics["reason"] == "quote_volume_24h_below_minimum"
+    result = evaluate_mex(frame, now=now, round_trip_taker_fee_pct=0.10, diagnostics=diagnostics)
+    assert result is not None, diagnostics
+    assert result["side"] == "LONG"
+    assert "quote_volume_24h_usd" not in result
+    assert "quote_volume_24h_usd" not in result["indicators"]
 
 
 def test_stop_is_never_tighter_than_0_8_atr_and_targets_are_1r_2r():

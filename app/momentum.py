@@ -132,8 +132,7 @@ def _indicators(frame):
 
 
 def evaluate_mex(
-    frame, *, quote_volume_24h_usd=None,
-    min_quote_volume_usd=100_000.0,
+    frame, *,
     round_trip_taker_fee_pct=0.10,
     min_rvol=MIN_RVOL, min_tr_ratio=MIN_TR_RATIO,
     max_extension_atr=MAX_EXTENSION_ATR,
@@ -152,10 +151,7 @@ def evaluate_mex(
                        {"high": float(c["high"]), "low": float(c["low"]),
                         "volume": float(c["volume"])})
     def diagnostic_values(extra):
-        return _values(c, {
-            "quote_volume_24h_usd": _round_or_none(quote_volume_24h_usd),
-            **(extra or {}),
-        })
+        return _values(c, extra or {})
     required = (
         "atr", "tr_ratio", "atr_pct", "rvol", "donchian_high_prior",
         "donchian_low_prior", "ema21", "close_location",
@@ -219,15 +215,6 @@ def evaluate_mex(
                        diagnostic_values({"minimum_atr_pct": minimum_atr_pct,
                                    "fee_cost_multiple": min_cost_multiple}))
 
-    try:
-        turnover = float(quote_volume_24h_usd)
-    except (TypeError, ValueError, OverflowError):
-        turnover = float("nan")
-    if not math.isfinite(turnover) or turnover < min_quote_volume_usd:
-        return _reject(diagnostics, "safety", "quote_volume_24h_below_minimum",
-                       diagnostic_values({"quote_volume_24h_usd": turnover,
-                                   "min_quote_volume_usd": min_quote_volume_usd}))
-
     stop_floor = 0.8 * atr_value
     stop = (
         min(float(c["low"]), entry - stop_floor) if side == "LONG"
@@ -247,10 +234,9 @@ def evaluate_mex(
 
     values = diagnostic_values({
         "side": side, "entry": entry, "stop_loss": stop, "tp1": tp1, "tp2": tp2,
-        "risk_reward_tp2": rr, "quote_volume_24h_usd": turnover,
+        "risk_reward_tp2": rr,
         "round_trip_taker_fee_pct": fee_pct,
         "extension_atr": extension_atr,
-        "min_quote_volume_usd": min_quote_volume_usd,
     })
     if diagnostics is not None:
         diagnostics.clear()
@@ -264,7 +250,6 @@ def evaluate_mex(
         "risk_reward": rr, "rvol": float(c["rvol"]),
         "tr_ratio": float(c["tr_ratio"]), "atr_pct": atr_pct,
         "close_location": close_location,
-        "quote_volume_24h_usd": turnover,
         "candle_time": c["timestamp"].to_pydatetime(),
         "reason": f"MEX {side}: 5m range break, TR ratio {float(c['tr_ratio']):.2f}, RVOL {float(c['rvol']):.2f}",
         "indicators": values,

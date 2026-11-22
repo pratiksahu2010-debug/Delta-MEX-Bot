@@ -62,7 +62,6 @@ class SignalEngine:
         self.quotes: dict[str, Quote] = {}
         self.received_at: dict[str, datetime] = {}
         self.last_quote_exchange_at: dict[str, datetime] = {}
-        self.quote_volume_24h_usd: dict[str, float] = {}
         self.ticker_snapshot_at: datetime | None = None
         self._ticker_snapshot_lock = asyncio.Lock()
         self.mex_runtime = {"candidates": 0, "log_only_candidates": 0, "signals_claimed": 0,
@@ -98,7 +97,7 @@ class SignalEngine:
                     "tr_ratio_pass": 0, "tr_ratio_fail": 0, "rvol_pass": 0, "rvol_fail": 0,
                     "close_location_pass": 0, "close_location_fail": 0,
                     "ema21_pass": 0, "ema21_fail": 0, "extension_pass": 0, "extension_fail": 0,
-                    "cost_pass": 0, "cost_fail": 0, "liquidity_pass": 0, "liquidity_fail": 0,
+                    "cost_pass": 0, "cost_fail": 0,
                     "rr_pass": 0, "rr_fail": 0,
                 },
                 "mex_evaluation_sources": {
@@ -443,7 +442,7 @@ class SignalEngine:
                 gates = self.strategy_diagnostics[strategy]["mex_gate_counts"]
                 gates["evaluated"] += 1
                 for gate in ("breakout", "tr_ratio", "rvol", "close_location",
-                             "ema21", "extension", "cost", "liquidity", "rr"):
+                             "ema21", "extension", "cost", "rr"):
                     gates[f"{gate}_pass"] += 1
             stats["setups_armed"] += 1
         else:
@@ -473,12 +472,10 @@ class SignalEngine:
                     failed_gate = "extension"
                 elif reason in ("atr_below_cost_floor", "round_trip_taker_fee_not_configured"):
                     failed_gate = "cost"
-                elif reason == "quote_volume_24h_below_minimum":
-                    failed_gate = "liquidity"
                 elif reason == "tp2_risk_reward_below_minimum":
                     failed_gate = "rr"
                 ordered = ("breakout", "tr_ratio", "rvol", "close_location",
-                           "ema21", "extension", "cost", "liquidity", "rr")
+                           "ema21", "extension", "cost", "rr")
                 if failed_gate is not None:
                     for gate in ordered:
                         if ordered.index(gate) < ordered.index(failed_gate):
@@ -512,7 +509,7 @@ class SignalEngine:
                 "ema_spread_atr", "ema21_slope_atr", "adx", "adx_min",
                 "risk_atr", "extension_atr", "close_location", "body_atr",
                 "tr_ratio", "min_tr_ratio", "rvol_baseline", "atr_pct", "minimum_atr_pct",
-                "quote_volume_24h_usd", "min_quote_volume_usd", "risk_reward_tp2",
+                "risk_reward_tp2",
                 "min_risk_reward_tp2", "donchian_high_prior", "donchian_low_prior",
                 "range_atr", "candle_body_atr", "candle_range_atr",
                 "range_high", "range_low", "range_lookback", "range_bar_count",
@@ -1050,24 +1047,8 @@ class SignalEngine:
             self._update_ticker_snapshot(rows, now)
 
     def _update_ticker_snapshot(self, rows, received: datetime) -> None:
-        snapshot = {}
-        active = set(self.active_symbols or self.configured_symbols)
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            symbol = str(row.get("symbol") or "").strip().upper()
-            if symbol not in active:
-                continue
-            raw = row.get("turnover_usd")
-            if raw is None and str(row.get("turnover_symbol") or "").upper() == "USD":
-                raw = row.get("turnover")
-            try:
-                value = float(raw)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if math.isfinite(value) and value >= 0:
-                snapshot[symbol] = value
-        self.quote_volume_24h_usd = snapshot
+        # This timestamp is operational metadata only. MEX never reads 24h
+        # turnover or uses it to include/exclude a configured symbol.
         self.ticker_snapshot_at = received
 
     async def refresh_context(self, symbol: str) -> None:
@@ -1207,8 +1188,6 @@ class SignalEngine:
                 diagnostics = {}
                 result = evaluate_mex(
                     frame,
-                    quote_volume_24h_usd=self.quote_volume_24h_usd.get(symbol),
-                    min_quote_volume_usd=float(getattr(self.settings, "mex_min_24h_quote_volume_usd", 100000.0)),
                     round_trip_taker_fee_pct=float(getattr(self.settings, "mex_round_trip_taker_fee_pct", 0.10)),
                     min_rvol=float(getattr(self.settings, "mex_min_rvol", 1.5)),
                     min_tr_ratio=float(getattr(self.settings, "mex_min_tr_ratio", 2.0)),
@@ -1231,7 +1210,6 @@ class SignalEngine:
                         "take_profit_1": result["take_profit_1"], "take_profit_2": result["take_profit_2"],
                         "risk_reward": result["risk_reward"], "rvol": result["rvol"],
                         "tr_ratio": result["tr_ratio"], "atr_pct": result["atr_pct"],
-                        "quote_volume_24h_usd": result["quote_volume_24h_usd"],
                         "setup_time": latest.timestamp.isoformat(),
                         "trigger_confirmed_at": (latest.timestamp + timedelta(minutes=5)).isoformat(),
                         "reason": result["reason"], "context_15m": "NOT_USED", "atr": result["atr"],
@@ -1738,10 +1716,7 @@ class SignalEngine:
                 "min_bars": 250,
                 "min_rvol": float(getattr(self.settings, "mex_min_rvol", 1.5)),
                 "min_tr_ratio": float(getattr(self.settings, "mex_min_tr_ratio", 2.0)),
-                "min_quote_volume_24h_usd": float(getattr(self.settings, "mex_min_24h_quote_volume_usd", 100000.0)),
                 "round_trip_taker_fee_pct": float(getattr(self.settings, "mex_round_trip_taker_fee_pct", 0.10)),
-                "quote_volume_symbols": len(self.quote_volume_24h_usd),
-                "ticker_snapshot_at": self.ticker_snapshot_at.isoformat() if self.ticker_snapshot_at else None,
                 "state": self.store.mex_state() if state_store_ok else None,
             },
             "telegram_delivery": dict(self.telegram_delivery),

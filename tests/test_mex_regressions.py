@@ -14,7 +14,7 @@ def test_gap_in_250_bar_window_is_a_hard_rejection():
     frame.loc[150:, "timestamp"] += __import__("datetime").timedelta(minutes=5)
     from app.momentum import evaluate_mex
     diagnostics = {}
-    assert evaluate_mex(frame, now=now, quote_volume_24h_usd=250000,
+    assert evaluate_mex(frame, now=now, 
                         round_trip_taker_fee_pct=0.10,
                         diagnostics=diagnostics) is None
     assert diagnostics["reason"] == "gap_in_required_250_bars"
@@ -25,7 +25,7 @@ def test_zero_range_latest_candle_is_reported_as_data_rejection():
     frame, now = make_frame("LONG")
     frame.loc[frame.index[-1], ["open", "high", "low", "close"]] = 100.0
     diagnostics = {}
-    assert evaluate_mex(frame, now=now, quote_volume_24h_usd=250000,
+    assert evaluate_mex(frame, now=now, 
                         round_trip_taker_fee_pct=0.10,
                         diagnostics=diagnostics) is None
     assert diagnostics["stage"] == "data"
@@ -37,7 +37,7 @@ def test_non_positive_ohlc_is_rejected_as_market_data_corruption():
     frame, now = make_frame("LONG")
     frame.loc[frame.index[10], "low"] = 0.0
     diagnostics = {}
-    assert evaluate_mex(frame, now=now, quote_volume_24h_usd=250000,
+    assert evaluate_mex(frame, now=now, 
                         round_trip_taker_fee_pct=0.10,
                         diagnostics=diagnostics) is None
     assert diagnostics["stage"] == "data"
