@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     rb_enabled: bool = True
     rb_min_rvol: float = 1.45
     rb_range_lookback: int = 12
-    mex_min_rvol: float = 2.0
+    mex_min_rvol: float = 1.5
     mex_min_tr_ratio: float = 2.0
     mex_min_24h_quote_volume_usd: float = 100000.0
     # Set this to the account's actual round-trip taker fee, in percentage points.
