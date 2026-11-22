@@ -600,6 +600,37 @@ def _migration_10_add_canonical_neon_storage(db, backend: str) -> None:
     db.execute("CREATE INDEX IF NOT EXISTS idx_ml_feedback_signal_module ON ml_feedback_labels(signal_id,strategy,created_at)")
 
 
+def _migration_11_add_minimal_mex_state(db, backend: str) -> None:
+    db.execute("""CREATE TABLE IF NOT EXISTS mex_symbol_state (
+        symbol TEXT PRIMARY KEY,
+        state TEXT NOT NULL DEFAULT 'IDLE' CHECK (state IN ('IDLE','TRIGGERED','COOLDOWN')),
+        last_side TEXT,
+        last_signal_candle TEXT,
+        cooldown_until TEXT,
+        updated_at TEXT NOT NULL
+    )""")
+    db.execute("""CREATE TABLE IF NOT EXISTS mex_signal_events (
+        signal_key TEXT PRIMARY KEY,
+        symbol TEXT NOT NULL,
+        side TEXT NOT NULL CHECK (side IN ('LONG','SHORT')),
+        candle_time TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(symbol,candle_time)
+    )""")
+    db.execute("""CREATE TABLE IF NOT EXISTS mex_state_events (
+        event_id TEXT PRIMARY KEY,
+        symbol TEXT NOT NULL,
+        from_state TEXT,
+        to_state TEXT NOT NULL,
+        side TEXT,
+        candle_time TEXT,
+        reason TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )""")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_mex_signal_events_created ON mex_signal_events(created_at)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_mex_state_events_symbol_time ON mex_state_events(symbol,created_at)")
+
+
 MIGRATIONS: tuple[tuple[int, str, Callable], ...] = (
     (1, "create_base_signal_schema", _migration_1_create_base_schema),
     (2, "add_lifecycle_telemetry_and_outbox_leases", _migration_2_add_lifecycle_and_outbox_leases),
@@ -611,6 +642,7 @@ MIGRATIONS: tuple[tuple[int, str, Callable], ...] = (
     (8, "create_durable_signal_outcomes", _migration_8_create_signal_outcomes),
     (9, "create_point_in_time_shadow_ml_tables", _migration_9_create_shadow_ml_tables),
     (10, "add_canonical_neon_storage_schema", _migration_10_add_canonical_neon_storage),
+    (11, "add_minimal_mex_signal_state", _migration_11_add_minimal_mex_state),
 )
 
 
