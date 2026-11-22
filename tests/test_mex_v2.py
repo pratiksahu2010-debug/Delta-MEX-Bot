@@ -122,7 +122,24 @@ def test_rejects_forming_latest_bar():
 
 def test_rvol_is_first_trigger_gate_after_breakout():
     frame, now = make_frame("LONG")
-    frame.loc[frame.index[-1], "volume"] = 149.0
+    frame.loc[frame.index[-1], "volume"] = 114.0
+    diagnostics = {}
+    result = evaluate(frame, now, diagnostics=diagnostics)
+    assert result is None
+    assert diagnostics["reason"] == "rvol_below_minimum"
+
+
+def test_rvol_1_15_boundary_is_accepted():
+    frame, now = make_frame("LONG")
+    frame.loc[frame.index[-1], "volume"] = 115.0
+    result = evaluate(frame, now)
+    assert result is not None
+    assert result["rvol"] == pytest.approx(1.15)
+
+
+def test_rvol_1_14_is_rejected_by_balanced_minimum():
+    frame, now = make_frame("LONG")
+    frame.loc[frame.index[-1], "volume"] = 114.0
     diagnostics = {}
     result = evaluate(frame, now, diagnostics=diagnostics)
     assert result is None
@@ -145,6 +162,28 @@ def test_tr_ratio_is_first_trigger_gate_after_breakout():
     result = evaluate(frame, now, diagnostics=diagnostics)
     assert result is None
     assert diagnostics["reason"] == "tr_ratio_below_minimum"
+
+
+def test_breakout_clearance_gate_rejects_marginal_level_crossing():
+    frame, now = make_frame("LONG")
+    frame.loc[frame.index[-1], ["open", "high", "low", "close", "volume"]] = [
+        100.02, 100.17, 100.00, 100.16, 300.0
+    ]
+    diagnostics = {}
+    result = evaluate(frame, now, min_tr_ratio=0.5, diagnostics=diagnostics)
+    assert result is None
+    assert diagnostics["reason"] == "breakout_clearance_below_minimum"
+    assert diagnostics["values"]["breakout_clearance_atr"] < 0.10
+
+
+def test_accepted_setup_includes_quality_metrics_without_a_quality_score_gate():
+    frame, now = make_frame("LONG")
+    result = evaluate(frame, now)
+    assert result is not None
+    assert result["breakout_clearance_atr"] >= 0.10
+    assert 0.0 <= result["body_ratio"] <= 1.0
+    assert 0.0 <= result["quality_score"] <= 100.0
+    assert result["quality_tier"] in {"A", "B", "C", "QUALIFIED"}
 
 
 def test_close_location_gate_rejects_weak_breakout_close():
