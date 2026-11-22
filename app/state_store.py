@@ -74,6 +74,108 @@ class SignalStore:
         with self._connect() as db:
             db.execute(sql, (signal_key, json.dumps(payload, separators=(",", ":")), now, now, now))
 
+    def claim_mex_signal(self, signal_key, symbol, side, candle_time, payload, *,
+                         max_per_hour=5, cooldown_bars=12, now=None):
+        """Atomically enforce per-symbol cooldown/global hourly cap and enqueue Telegram."""
+        now = (now or _utc_now()).astimezone(timezone.utc)
+        now_text = now.isoformat()
+        candle = datetime.fromisoformat(str(candle_time).replace("Z", "+00:00"))
+        if candle.tzinfo is None:
+            candle = candle.replace(tzinfo=timezone.utc)
+        candle = candle.astimezone(timezone.utc)
+        candle_text = candle.isoformat()
+        cooldown_until = (candle + timedelta(minutes=5 * int(cooldown_bars))).isoformat()
+        side = str(side).upper()
+        if side not in {"LONG", "SHORT"} or max_per_hour < 1 or cooldown_bars < 1:
+            raise ValueError("Invalid MEX signal claim arguments")
+        ph = "?" if self.backend == "sqlite" else "%s"
+
+        def event(db, old, new, reason):
+            db.execute(
+                f"INSERT INTO mex_state_events(event_id,symbol,from_state,to_state,side,candle_time,reason,created_at) VALUES ({','.join([ph] * 8)})",
+                (secrets.token_urlsafe(18), symbol, old, new, side, candle_text, reason, now_text),
+            )
+
+        with self._connect() as db:
+            if self.backend == "sqlite":
+                db.execute("BEGIN IMMEDIATE")
+            else:
+                db.execute("SELECT pg_advisory_xact_lock(%s)", (731904223,))
+            db.execute(
+                f"INSERT INTO mex_symbol_state(symbol,state,updated_at) VALUES ({ph},'IDLE',{ph}) ON CONFLICT(symbol) DO NOTHING",
+                (symbol, now_text),
+            )
+            lock_sql = (
+                "SELECT state,cooldown_until FROM mex_symbol_state WHERE symbol=?"
+                if self.backend == "sqlite"
+                else "SELECT state,cooldown_until FROM mex_symbol_state WHERE symbol=%s FOR UPDATE"
+            )
+            row = db.execute(lock_sql, (symbol,)).fetchone()
+            state, saved_cooldown = row[0], row[1]
+            if state == "COOLDOWN":
+                if saved_cooldown and candle_text < str(saved_cooldown):
+                    return False, "symbol_cooldown"
+                db.execute(f"UPDATE mex_symbol_state SET state='IDLE',updated_at={ph} WHERE symbol={ph}",
+                           (now_text, symbol))
+                event(db, "COOLDOWN", "IDLE", "cooldown_expired")
+                state = "IDLE"
+            if state != "IDLE":
+                return False, "symbol_not_idle"
+            cutoff = (now - timedelta(hours=1)).isoformat()
+            count = db.execute(
+                f"SELECT COUNT(*) FROM mex_signal_events WHERE created_at >= {ph}", (cutoff,)
+            ).fetchone()[0]
+            if int(count or 0) >= int(max_per_hour):
+                return False, "global_hourly_signal_limit"
+            insert = (
+                "INSERT OR IGNORE INTO mex_signal_events(signal_key,symbol,side,candle_time,created_at) VALUES (?,?,?,?,?)"
+                if self.backend == "sqlite"
+                else "INSERT INTO mex_signal_events(signal_key,symbol,side,candle_time,created_at) VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING"
+            )
+            cur = db.execute(insert, (signal_key, symbol, side, candle_text, now_text))
+            if cur.rowcount != 1:
+                return False, "duplicate_symbol_candle"
+            db.execute(
+                f"UPDATE mex_symbol_state SET state='TRIGGERED',last_side={ph},last_signal_candle={ph},updated_at={ph} WHERE symbol={ph}",
+                (side, candle_text, now_text, symbol),
+            )
+            event(db, "IDLE", "TRIGGERED", "closed_candle_signal_claimed")
+            db.execute(
+                f"UPDATE mex_symbol_state SET state='COOLDOWN',cooldown_until={ph},updated_at={ph} WHERE symbol={ph}",
+                (cooldown_until, now_text, symbol),
+            )
+            event(db, "TRIGGERED", "COOLDOWN", "cooldown_started")
+            outbox = (
+                """INSERT OR IGNORE INTO alert_outbox
+                   (signal_key,payload_json,status,attempts,created_at,next_attempt_at,updated_at)
+                   VALUES (?,?, 'pending',0,?,?,?)"""
+                if self.backend == "sqlite"
+                else """INSERT INTO alert_outbox
+                   (signal_key,payload_json,status,attempts,created_at,next_attempt_at,updated_at)
+                   VALUES (%s,%s,'pending',0,%s,%s,%s) ON CONFLICT(signal_key) DO NOTHING"""
+            )
+            db.execute(outbox, (signal_key, json.dumps(payload, separators=(",", ":")),
+                                now_text, now_text, now_text))
+        return True, "accepted"
+
+    def mex_state(self):
+        now = _utc_now()
+        cutoff = (now - timedelta(hours=1)).isoformat()
+        ph = "?" if self.backend == "sqlite" else "%s"
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT symbol,state,last_side,last_signal_candle,cooldown_until,updated_at FROM mex_symbol_state ORDER BY symbol"
+            ).fetchall()
+            count = db.execute(
+                f"SELECT COUNT(*) FROM mex_signal_events WHERE created_at >= {ph}", (cutoff,)
+            ).fetchone()[0]
+        return {
+            "states": [{"symbol": r[0], "state": r[1], "last_side": r[2],
+                        "last_signal_candle": r[3], "cooldown_until": r[4],
+                        "updated_at": r[5]} for r in rows],
+            "signals_last_hour": int(count or 0), "hourly_limit": 5,
+        }
+
     def due_alerts(self, limit: int = 50) -> list[tuple[str, dict]]:
         now = _utc_now().isoformat()
         placeholder = "?" if self.backend == "sqlite" else "%s"
