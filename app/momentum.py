@@ -237,7 +237,6 @@ def evaluate_mex(
         "risk_reward_tp2": rr,
         "round_trip_taker_fee_pct": fee_pct,
         "extension_atr": extension_atr,
-        "min_quote_volume_usd": min_quote_volume_usd,
     })
     if diagnostics is not None:
         diagnostics.clear()
