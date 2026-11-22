@@ -123,7 +123,7 @@ def test_rejects_forming_latest_bar():
 
 def test_rvol_is_first_trigger_gate_after_breakout():
     frame, now = make_frame("LONG")
-    frame.loc[frame.index[-1], "volume"] = 199.0
+    frame.loc[frame.index[-1], "volume"] = 149.0
     diagnostics = {}
     result = evaluate(frame, now, diagnostics=diagnostics)
     assert result is None
