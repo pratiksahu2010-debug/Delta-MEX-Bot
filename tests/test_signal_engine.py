@@ -849,110 +849,22 @@ def test_health_exposes_stale_quote_and_websocket_heartbeat(tmp_path):
     asyncio.run(engine.rest.close())
 
 
-def test_live_5m_candle_does_not_arm_mex_setup(tmp_path, monkeypatch):
-    from app.models import Candle
-
-    async def run():
-        engine, _notifier = make_engine(tmp_path)
-        engine.settings.momentum_symbol_list = ["BTCUSD"]
-        engine.settings.mex_enabled = True
-        now = datetime.now(timezone.utc)
-        bucket = int(now.timestamp()) // 300 * 300
-        last_completed_time = datetime.fromtimestamp(bucket - 300, timezone.utc)
-        engine.candles["BTCUSD"] = [
-            Candle(
-                timestamp=last_completed_time - timedelta(minutes=5 * (59 - i)),
-                open=100.0, high=100.5, low=99.5, close=100.0, volume=100.0,
-            )
-            for i in range(60)
-        ]
-        live = Candle(
-            timestamp=datetime.fromtimestamp(bucket, timezone.utc),
-            open=100.0, high=102.0, low=99.8, close=101.8, volume=220.0,
-        )
-        evaluations = []
-        monkeypatch.setattr(
-            "app.signal_engine.evaluate_mex",
-            lambda frame, **kwargs: evaluations.append(frame.iloc[-1].to_dict()),
-        )
-        await engine.on_live_candle("BTCUSD", live, now)
-        assert evaluations == []
-        assert ("BTCUSD", "MEX") not in engine.momentum_pending
-        assert "BTCUSD" not in engine.live_mex_candles
-        await engine.rest.close()
-
-    asyncio.run(run())
-
-def test_live_mex_waits_for_contiguous_completed_history(tmp_path, monkeypatch):
-    from app.models import Candle
-
-    async def run():
-        engine, _notifier = make_engine(tmp_path)
-        engine.settings.momentum_symbol_list = ["BTCUSD"]
-        engine.settings.mex_enabled = True
-        now = datetime.now(timezone.utc)
-        bucket = int(now.timestamp()) // 300 * 300
-        live = Candle(
-            timestamp=datetime.fromtimestamp(bucket, timezone.utc),
-            open=100.0, high=102.0, low=99.8, close=101.8, volume=220.0,
-        )
-        called = []
-        monkeypatch.setattr("app.signal_engine.evaluate_mex", lambda *_args, **_kwargs: called.append(True))
-        await engine.on_live_candle("BTCUSD", live, now)
-        assert called == []
-        await engine.rest.close()
-
-    asyncio.run(run())
-
-
-def test_live_ws_candles_are_not_promoted_into_completed_mex_history(tmp_path, monkeypatch):
-    from app.models import Candle
-
-    async def run():
-        engine, _notifier = make_engine(tmp_path)
-        engine.settings.momentum_symbol_list = ["BTCUSD"]
-        engine.settings.mex_enabled = True
-        now = datetime.now(timezone.utc)
-        bucket = int(now.timestamp()) // 300 * 300
-        last_completed_time = datetime.fromtimestamp(bucket - 300, timezone.utc)
-        engine.candles["BTCUSD"] = [
-            Candle(
-                timestamp=last_completed_time - timedelta(minutes=5 * (59 - i)),
-                open=100.0, high=100.5, low=99.5, close=100.0, volume=100.0,
-            )
-            for i in range(60)
-        ]
-        first = Candle(
-            timestamp=datetime.fromtimestamp(bucket, timezone.utc),
-            open=100.0, high=101.0, low=99.8, close=100.5, volume=150.0,
-        )
-        await engine.on_live_candle("BTCUSD", first, now)
-        assert engine.candles["BTCUSD"][-1].timestamp == last_completed_time
-        assert "BTCUSD" not in engine.live_mex_candles
-        second = Candle(
-            timestamp=datetime.fromtimestamp(bucket + 300, timezone.utc),
-            open=100.5, high=102.0, low=100.4, close=101.8, volume=180.0,
-        )
-        await engine.on_live_candle("BTCUSD", second, now + timedelta(minutes=5))
-        assert engine.candles["BTCUSD"][-1].timestamp == last_completed_time
-        assert "BTCUSD" not in engine.live_mex_candles
-        await engine.rest.close()
-
-    asyncio.run(run())
-
-def test_stream_disconnect_discards_partial_mex_candle_and_forces_recovery(tmp_path):
-    from app.models import Candle
-
+def test_mex_is_closed_candle_only_and_disconnect_forces_rest_refresh(tmp_path):
     engine, _notifier = make_engine(tmp_path)
     engine.settings.momentum_symbol_list = ["BTCUSD"]
-    engine.live_mex_candles["BTCUSD"] = Candle(
-        timestamp=datetime.now(timezone.utc), open=100, high=101,
-        low=99, close=100, volume=100,
-    )
+
+    # No candle callback is registered: L1 quote updates cannot feed MEX bars.
+    assert engine.stream.on_candle is None
+    assert not hasattr(engine, "on_live_candle")
+    assert not hasattr(engine, "live_mex_candles")
+    assert not hasattr(engine, "live_mex_last_eval")
+
+    # A socket disconnect invalidates the REST fetch timestamp so the next
+    # scanner cycle repairs completed OHLCV history before evaluating again.
     engine.last_candle_fetch_at["BTCUSD"] = datetime.now(timezone.utc)
     engine.on_stream_disconnect()
-    assert "BTCUSD" not in engine.live_mex_candles
     assert "BTCUSD" not in engine.last_candle_fetch_at
+
     asyncio.run(engine.rest.close())
 
 

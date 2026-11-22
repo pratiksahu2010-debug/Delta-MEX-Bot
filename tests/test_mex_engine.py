@@ -129,6 +129,8 @@ def test_mex_scanner_does_not_consume_forming_candle_before_its_close(tmp_path, 
         monkeypatch.setattr(engine.rest, "candles", candles)
         monkeypatch.setattr(engine.rest, "tickers", tickers)
         await engine.refresh_symbol("BTCUSD")
+        assert engine.stream.on_candle is None
+        assert engine.stream.required_channels == ["ob_l1"]
         assert "BTCUSD" not in engine.last_evaluated
         assert engine.candle_diagnostics["BTCUSD"]["reason"] == "latest_candle_not_closed"
         # Once the bar is closed, the same timestamp can be evaluated normally.
@@ -139,4 +141,36 @@ def test_mex_scanner_does_not_consume_forming_candle_before_its_close(tmp_path, 
         assert engine.last_evaluated["BTCUSD"] == closed_bars[-1].timestamp
         assert engine.mex_runtime["candidates"] == 1
         await engine.rest.close()
+    asyncio.run(run())
+
+
+def test_mex_flat_trigger_diagnostics_classify_traded_at_one_price_bar(tmp_path, monkeypatch):
+    async def run():
+        engine = _engine(tmp_path, True)
+        bars = _closed_history()
+        last = bars[-1]
+        bars[-1] = Candle(
+            timestamp=last.timestamp, open=last.close, high=last.close,
+            low=last.close, close=last.close, volume=250.0,
+        )
+
+        async def candles(*_args, **_kwargs):
+            return bars
+
+        async def tickers():
+            return [{"symbol": "BTCUSD"}]
+
+        monkeypatch.setattr(engine.rest, "candles", candles)
+        monkeypatch.setattr(engine.rest, "tickers", tickers)
+        await engine.refresh_symbol("BTCUSD")
+
+        diagnostic = engine.strategy_diagnostics["MEX"]["last_rejection_by_reason"][
+            "zero_range_trigger_candle"
+        ]
+        assert diagnostic["values"]["flat_bar_class"] == "traded_at_one_price"
+        assert diagnostic["values"]["volume"] == 250.0
+        assert diagnostic["values"]["same_as_previous_close"] is False
+        assert engine.mex_runtime["candidates"] == 0
+        await engine.rest.close()
+
     asyncio.run(run())
