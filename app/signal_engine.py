@@ -479,12 +479,16 @@ class SignalEngine:
                     failed_gate = "rr"
                 ordered = ("breakout", "tr_ratio", "rvol", "close_location",
                            "ema21", "extension", "cost", "liquidity", "rr")
-                for gate in ordered:
-                    if failed_gate is None or ordered.index(gate) < ordered.index(failed_gate):
+                if failed_gate is not None:
+                    for gate in ordered:
+                        if ordered.index(gate) < ordered.index(failed_gate):
+                            gates[f"{gate}_pass"] += 1
+                        elif gate == failed_gate:
+                            gates[f"{gate}_fail"] += 1
+                            break
+                elif diagnostic.get("stage") in ("log_only", "state"):
+                    for gate in ordered:
                         gates[f"{gate}_pass"] += 1
-                    elif gate == failed_gate:
-                        gates[f"{gate}_fail"] += 1
-                        break
             # Preserve bounded, numeric evidence so /status can distinguish
             # low participation from weak volatility expansion without
             # changing detector eligibility or flooding application logs.
