@@ -146,7 +146,7 @@ def evaluate_mex(
     x = _indicators(f)
     c, p = x.iloc[-1], x.iloc[-2]
     def diagnostic_values(extra):
-        return diagnostic_values({
+        return _values(c, {
             "quote_volume_24h_usd": _round_or_none(quote_volume_24h_usd),
             **(extra or {}),
         })
