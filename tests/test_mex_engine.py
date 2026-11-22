@@ -70,9 +70,9 @@ def test_mex_log_only_records_candidate_and_persists_state_without_telegram(tmp_
         assert engine.notifier.alerts == []
         assert engine.store.due_alerts() == []
         mex_state = engine.store.mex_state()
-        # Log-only candidates persist cooldown state but do not consume live-alert capacity.
+        # Log-only candidates persist the audit state but do not consume live-alert capacity.
         assert mex_state["signals_last_hour"] == 0
-        assert mex_state["states"][0]["state"] == "COOLDOWN"
+        assert mex_state["states"][0]["state"] == "IDLE"
         assert mex_state["states"][0]["last_breakout_level"] is not None
         record = engine.journal.latest_record()
         assert record["reason"] == "log_only_candidate_state_claimed"
@@ -104,7 +104,7 @@ def test_mex_live_signal_uses_trigger_close_without_waiting_for_quote(tmp_path, 
         assert alert["take_profit_2"] > alert["take_profit_1"]
         assert not engine.momentum_pending
         state = engine.store.mex_state()["states"][0]
-        assert state["state"] == "COOLDOWN"
+        assert state["state"] == "IDLE"
         assert engine.store.outbox_health()["sent"] == 1
         await engine.rest.close()
 
