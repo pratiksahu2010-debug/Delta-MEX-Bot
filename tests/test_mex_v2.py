@@ -130,6 +130,15 @@ def test_rvol_is_first_trigger_gate_after_breakout():
     assert diagnostics["reason"] == "rvol_below_minimum"
 
 
+def test_zero_current_volume_fails_rvol_gate_not_indicator_warmup():
+    frame, now = make_frame("LONG")
+    frame.loc[frame.index[-1], "volume"] = 0.0
+    diagnostics = {}
+    result = evaluate(frame, now, diagnostics=diagnostics)
+    assert result is None
+    assert diagnostics["reason"] == "rvol_below_minimum"
+
+
 def test_tr_ratio_is_first_trigger_gate_after_breakout():
     frame, now = make_frame("LONG")
     frame.loc[frame.index[-1], ["high", "low", "close"]] = [100.45, 100.0, 100.4]
