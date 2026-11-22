@@ -154,7 +154,9 @@ def evaluate_mex(
         "atr", "tr_ratio", "atr_pct", "rvol", "donchian_high_prior",
         "donchian_low_prior", "ema21", "close_location",
     )
-    invalid = [name for name in required if not _finite(c[name])]
+    invalid = [name for name in required if _finite(c[name]) is None]
+    if float(c["atr"]) <= 0 or float(c["close"]) <= 0:
+        invalid.append("atr_or_close_nonpositive")
     if invalid:
         return _reject(diagnostics, "indicators", "indicator_warmup_or_invalid",
                        {"invalid_indicators": invalid})
