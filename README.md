@@ -32,14 +32,13 @@ SHORT requires all of: close below prior Donchian low, TR ratio >= 2.0, RVOL >= 
 
 - Extension: absolute distance from close to EMA21 <= 2.5 × ATR(14).
 - Cost: ATR% >= 3 × configured round-trip taker fee.
-- Liquidity: 24-hour quote turnover must be >= the configured USD minimum. The Delta ticker's `turnover_usd` field is preferred; `turnover` is accepted only when `turnover_symbol=USD`. Missing turnover fails closed.
+- Universe: scan only the fixed configured 120-symbol list. There is no 24-hour turnover filter and no dynamic symbol substitution.
 - TP2 gross reward/risk must be >= 1.5. TP2 is 2R in this strategy.
 
 Defaults are conservative starting values, not a substitute for account-specific fee settings or walk-forward testing:
 
 - `MEX_MIN_RVOL=1.5`
 - `MEX_MIN_TR_RATIO=2.0`
-- `MEX_MIN_24H_QUOTE_VOLUME_USD=100000`
 - `MEX_ROUND_TRIP_TAKER_FEE_PCT=0.10` (percentage points; replace with the actual round-trip taker fee for the account)
 - `MEX_LOG_ONLY=true`
 
@@ -57,6 +56,12 @@ Defaults are conservative starting values, not a substitute for account-specific
 - A global database-serialized cap allows at most five MEX signals in any rolling hour across all symbols.
 - The signal claim, state transition, event record, and Telegram outbox insert are committed atomically. Restarting the process cannot repeat a claimed signal.
 
+## Scanner polling and validation
+
+- After a symbol has a fresh, contiguous 250-bar history, the scanner waits until the next 5-minute candle has closed before downloading history again. This avoids repeatedly downloading the same 320 bars every 30 seconds.
+- Data gaps, stale history, warmup, forming candles, and REST errors retain the configured retry cadence so recovery is not hidden.
+- 15-minute context remains informational and is refreshed separately.
+
 ## One-week validation before Telegram
 
 **Keep `MEX_LOG_ONLY=true` for at least one week.** Candidates and the first failed gate are written to the signal journal and application logs; no Telegram signal is enqueued during this period.
@@ -64,12 +69,12 @@ Defaults are conservative starting values, not a substitute for account-specific
 After the week, review:
 
 1. Candidate count and first-failed-gate distribution by symbol.
-2. Whether the 24-hour turnover and round-trip fee settings match the intended market/account.
+2. Whether the configured round-trip fee matches the intended account fee tier.
 3. Walk-forward results on real Delta 5-minute history, with no look-ahead and a chronological train/test split.
 4. Net expectancy after round-trip taker fees and realistic slippage, not win rate alone.
 5. Signal frequency, cooldown behavior, and the global hourly cap.
 
-For a historically valid liquidity-gate backtest, the CSV must include a time-aligned `quote_volume_24h_usd` value for each candle. Delta's historical candle endpoint supplies OHLCV, while `turnover_usd` is available from live tickers; reusing today's ticker turnover for old candles would introduce look-ahead bias. The detector replay script therefore fails the liquidity gate when the historical quote-volume field is absent. It is not a P&L backtest and must not be presented as expectancy.
+The detector replay script evaluates historical OHLCV triggers only. It is not a P&L backtest and must not be presented as expectancy; use chronological out-of-sample testing with realistic fees and slippage before relying on results.
 
 Only after that review should `MEX_LOG_ONLY=false` be set to enable Telegram delivery. Signal-only safety remains mandatory: `SIGNAL_ONLY=true`, `ORDERS_ENABLED=false`.
 
@@ -84,7 +89,6 @@ BOT_MODULE=MEX
 MEX_ENABLED=true
 MEX_MIN_RVOL=1.5
 MEX_MIN_TR_RATIO=2.0
-MEX_MIN_24H_QUOTE_VOLUME_USD=100000
 MEX_ROUND_TRIP_TAKER_FEE_PCT=0.10
 MEX_LOG_ONLY=true
 SIGNAL_ONLY=true

@@ -514,6 +514,43 @@ def test_refresh_symbol_throttles_repeated_5m_rest_polls(tmp_path, monkeypatch):
     asyncio.run(run())
 
 
+
+def test_mex_candle_refresh_waits_for_next_completed_bar(tmp_path, monkeypatch):
+    from app.models import Candle
+
+    async def run():
+        engine, _notifier = make_engine(tmp_path)
+        engine.settings.mex_enabled = True
+        engine.settings.momentum_symbol_list = ["BTCUSD"]
+        engine.settings.candle_poll_interval_seconds = 0.0
+
+        now = datetime.now(timezone.utc)
+        current_bucket = int(now.timestamp() // 300) * 300
+        latest_time = datetime.fromtimestamp(current_bucket - 300, timezone.utc)
+        bars = [
+            Candle(
+                timestamp=latest_time - timedelta(minutes=5 * (249 - i)),
+                open=100, high=101, low=99, close=100.5, volume=100,
+            )
+            for i in range(250)
+        ]
+        calls = {"count": 0}
+
+        async def fake_candles(_symbol, _timeframe, _limit):
+            calls["count"] += 1
+            return bars
+
+        monkeypatch.setattr(engine.rest, "candles", fake_candles)
+        await engine.refresh_symbol("BTCUSD")
+        await engine.refresh_symbol("BTCUSD")
+
+        assert calls["count"] == 1
+        assert engine.candle_diagnostics["BTCUSD"]["state"] == "ready"
+        await engine.rest.close()
+
+    asyncio.run(run())
+
+
 def test_15m_context_fetches_once_per_bucket_and_retries_unavailable_slowly(tmp_path, monkeypatch):
     async def run():
         engine, _notifier = make_engine(tmp_path)
