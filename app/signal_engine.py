@@ -1212,7 +1212,7 @@ class SignalEngine:
                     frame,
                     round_trip_taker_fee_pct=float(getattr(self.settings, "mex_round_trip_taker_fee_pct", 0.10)),
                     min_rvol=float(getattr(self.settings, "mex_min_rvol", 1.5)),
-                    min_tr_ratio=float(getattr(self.settings, "mex_min_tr_ratio", 2.0)),
+                    min_tr_ratio=float(getattr(self.settings, "mex_min_tr_ratio", 1.5)),
                     diagnostics=diagnostics,
                 )
                 diagnostics["evaluation_source"] = "completed_candle"
@@ -1737,7 +1737,7 @@ class SignalEngine:
                 "log_only": bool(getattr(self.settings, "mex_log_only", True)),
                 "min_bars": 250,
                 "min_rvol": float(getattr(self.settings, "mex_min_rvol", 1.5)),
-                "min_tr_ratio": float(getattr(self.settings, "mex_min_tr_ratio", 2.0)),
+                "min_tr_ratio": float(getattr(self.settings, "mex_min_tr_ratio", 1.5)),
                 "round_trip_taker_fee_pct": float(getattr(self.settings, "mex_round_trip_taker_fee_pct", 0.10)),
                 "state": self.store.mex_state() if state_store_ok else None,
             },
