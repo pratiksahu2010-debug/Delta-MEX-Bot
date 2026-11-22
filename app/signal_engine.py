@@ -1228,9 +1228,9 @@ class SignalEngine:
                         "candle_time": latest.timestamp.isoformat(),
                         "entry": result["entry_reference"],
                         "rvol": result["rvol"], "tr_ratio": result["tr_ratio"],
-                        "breakout_clearance_atr": result["breakout_clearance_atr"],
-                        "quality_score": result["quality_score"],
-                        "quality_tier": result["quality_tier"],
+                        "breakout_clearance_atr": result.get("breakout_clearance_atr"),
+                        "quality_score": result.get("quality_score"),
+                        "quality_tier": result.get("quality_tier"),
                     }
                     log_only = bool(getattr(self.settings, "mex_log_only", True))
                     signal_key = f"{symbol}:MEX:{result['side']}:{latest.timestamp.isoformat()}"
@@ -1240,10 +1240,10 @@ class SignalEngine:
                         "take_profit_1": result["take_profit_1"], "take_profit_2": result["take_profit_2"],
                         "risk_reward": result["risk_reward"], "rvol": result["rvol"],
                         "tr_ratio": result["tr_ratio"], "atr_pct": result["atr_pct"],
-                        "breakout_clearance_atr": result["breakout_clearance_atr"],
-                        "body_ratio": result["body_ratio"],
-                        "quality_score": result["quality_score"],
-                        "quality_tier": result["quality_tier"],
+                        "breakout_clearance_atr": result.get("breakout_clearance_atr"),
+                        "body_ratio": result.get("body_ratio"),
+                        "quality_score": result.get("quality_score"),
+                        "quality_tier": result.get("quality_tier"),
                         "setup_time": latest.timestamp.isoformat(),
                         "trigger_confirmed_at": (latest.timestamp + timedelta(minutes=5)).isoformat(),
                         "reason": result["reason"], "context_15m": "NOT_USED", "atr": result["atr"],
