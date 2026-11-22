@@ -89,7 +89,8 @@ class SignalEngine:
                 "detail_counts": {}, "recent_rejections": [], "last_rejection": None,
                 "last_rejection_by_reason": {},
                 "mex_gate_counts": {"evaluated": 0, "squeeze_pass": 0, "squeeze_fail": 0,
-                                    "rvol_pass": 0, "rvol_fail": 0, "adx_pass": 0, "adx_fail": 0},
+                                    "rvol_pass": 0, "rvol_fail": 0, "rvol_unavailable": 0,
+                                    "adx_pass": 0, "adx_fail": 0},
                 "mex_evaluation_sources": {
                     "live_forming": {"evaluations": 0, "unique_symbol_candles": 0,
                                      "setups": 0, "rejections": 0},
@@ -428,7 +429,8 @@ class SignalEngine:
             if strategy == "MEX":
                 gates = self.strategy_diagnostics[strategy].setdefault("mex_gate_counts", {
                     "evaluated": 0, "squeeze_pass": 0, "squeeze_fail": 0,
-                    "rvol_pass": 0, "rvol_fail": 0, "adx_pass": 0, "adx_fail": 0,
+                    "rvol_pass": 0, "rvol_fail": 0, "rvol_unavailable": 0,
+                    "adx_pass": 0, "adx_fail": 0,
                 })
                 gates["evaluated"] += 1
                 for gate in ("squeeze", "rvol", "adx"):
@@ -449,6 +451,10 @@ class SignalEngine:
                     "rvol_pass": 0, "rvol_fail": 0, "adx_pass": 0, "adx_fail": 0,
                 })
                 failed = set(values.get("failed_filters", [])) if isinstance(values, dict) else set()
+                if reason in ("rvol_zero_or_missing_volume_baseline", "rvol_invalid"):
+                    # RVOL is unavailable, not a confirmed pass or fail. Keep it
+                    # separate so gate counters do not imply squeeze/ADX were tested.
+                    gates["rvol_unavailable"] = gates.get("rvol_unavailable", 0) + 1
                 # Gate counters follow the ordered MEX V2 pipeline. A later-stage
                 # rejection proves all earlier gates passed.
                 stage = diagnostic.get("stage")
