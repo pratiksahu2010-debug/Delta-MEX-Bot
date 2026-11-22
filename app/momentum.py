@@ -154,7 +154,7 @@ def evaluate_mex(
         no_trade = float(c["volume"]) <= 0.0
         return _reject(
             diagnostics, "data",
-            "zero_range_no_volume" if no_trade else "zero_range_positive_volume",
+            "zero_range_trigger_candle",
             {
                 "timestamp": c["timestamp"].isoformat(),
                 "open": float(c["open"]), "high": float(c["high"]),
