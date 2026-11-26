@@ -14,7 +14,7 @@ import uuid
 import numpy as np
 
 
-FEATURE_VERSION = "pit_orb_mex_v2"
+FEATURE_VERSION = "pit_orb_mex_v3"
 LABEL_VERSION = "market_outcome_v1"
 FEEDBACK_LABEL_VERSION = "human_feedback_v1"
 ALGORITHM = "logistic_regression_l2_v1"
@@ -64,6 +64,12 @@ FEATURE_COLUMNS = (
     "setup_to_trigger_seconds",
     "utc_hour",
     "utc_weekday",
+    "tr_ratio",
+    "close_location",
+    "directional_close_location",
+    "breakout_clearance_atr",
+    "quality_score",
+    "ema21_distance_atr",
     "feature_coverage_ratio",
     "feature_missing_count",
 )
@@ -73,6 +79,7 @@ _NUMERIC_INDICATOR_KEYS = {
     "roc3", "range_atr", "body_atr", "impulse_atr", "roc3_atr",
     "extension_atr", "range_width_atr", "breakout_extension_atr",
     "ema_spread_atr", "ema21_slope_atr_3bars", "context_score",
+    "tr_ratio", "close_location", "breakout_clearance_atr", "quality_score",
 }
 _FORBIDDEN_FEATURE_FRAGMENTS = (
     "outcome", "future", "mfe", "mae", "feedback", "review", "pnl",
@@ -133,14 +140,33 @@ def build_point_in_time_features(record: dict) -> dict:
 
     # Coverage is explicit so absent telemetry is not silently indistinguishable
     # from a genuine zero-valued indicator. The core set is strategy-neutral.
-    coverage_keys = ("atr_pct", "rvol", "rsi", "range_atr", "body_atr", "impulse_atr", "roc3")
+    coverage_keys = ("atr_pct", "rvol", "tr_ratio", "close_location", "breakout_clearance_atr", "extension_atr", "quality_score")
 
     side = str(record.get("side") or signal.get("side") or "").upper()
     features["side_long"] = 1.0 if side == "LONG" else 0.0
 
     risk_distance = _number(signal.get("risk_distance_atr") or indicators.get("risk_distance_atr"))
+    if risk_distance is None:
+        risk_distance_abs = _number(signal.get("risk_distance"))
+        atr_for_risk = _number(signal.get("atr"))
+        if risk_distance_abs is not None and atr_for_risk is not None and atr_for_risk > 0:
+            risk_distance = risk_distance_abs / atr_for_risk
     if risk_distance is not None:
         features["risk_distance_atr"] = risk_distance
+
+    for key in ("tr_ratio", "close_location", "breakout_clearance_atr", "quality_score"):
+        number = _number(indicators.get(key))
+        if number is not None:
+            features[key] = number
+    if features.get("close_location") is not None:
+        features["directional_close_location"] = (
+            features["close_location"] if side == "LONG" else 1.0 - features["close_location"]
+        )
+    ema21 = _number(indicators.get("ema21"))
+    if ema21 is not None and entry_reference is not None and entry_reference > 0:
+        atr_for_ema = _number(signal.get("atr"))
+        if atr_for_ema is not None and atr_for_ema > 0:
+            features["ema21_distance_atr"] = abs(entry_reference - ema21) / atr_for_ema
     for key in ("retest_touch", "structure_break"):
         number = _number(indicators.get(key))
         if number is not None:
