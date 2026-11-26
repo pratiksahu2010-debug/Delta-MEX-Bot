@@ -29,7 +29,7 @@ curl --fail-with-body -X POST \
 ## Data and model safeguards
 
 - Training features are point-in-time snapshots. Market outcomes and human feedback remain separate.
-- Missing feature telemetry is represented explicitly by coverage ratio and missing-count features; zero is no longer the only indication of missingness.
+- Missing feature telemetry is represented explicitly by coverage ratio and missing-count features; zero is no longer the only indication of missingness. The feature set includes the active minimal MEX detector's TR ratio, RVOL, close location, Donchian breakout clearance, EMA21 extension, and quality score.
 - Only completed, unambiguous OHLC-path outcomes with a finite net return are eligible labels.
 - Training, validation, and test data are chronological with a label-horizon embargo.
 - The minimum validation and test sets are 20 samples each; the test selection must contain at least 10 observations.
