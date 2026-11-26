@@ -19,6 +19,7 @@ configure_logging(getattr(logging, settings.log_level.upper(), logging.INFO))
 
 engine: SignalEngine | None = None
 engine_task: asyncio.Task | None = None
+_ml_training_lock = asyncio.Lock()
 
 class SignalFeedback(BaseModel):
     evaluation_id: str = Field(min_length=3, max_length=512)
@@ -411,6 +412,40 @@ async def health():
         },
         "execution": "disabled",
     })
+
+
+@app.get("/admin/ml-training")
+async def ml_training_status(
+    x_journal_key: str | None = Header(default=None, alias="X-Journal-Key"),
+):
+    """Read-only authenticated view of shadow ML training runs and models."""
+    _require_journal_key(x_journal_key)
+    if engine is None or getattr(engine, "shadow_ml", None) is None:
+        raise HTTPException(status_code=503, detail="Shadow ML service is unavailable")
+    return engine.shadow_ml.status(limit=50)
+
+
+@app.post("/admin/ml-training/{strategy}")
+async def run_ml_training(
+    strategy: str,
+    x_journal_key: str | None = Header(default=None, alias="X-Journal-Key"),
+):
+    """Run one isolated ORB/MEX research cycle without touching live signal decisions."""
+    _require_journal_key(x_journal_key)
+    normalized = str(strategy or "").strip().upper()
+    if normalized not in {"MEX", "ORB"}:
+        raise HTTPException(status_code=400, detail="strategy must be MEX or ORB")
+    if engine is None or getattr(engine, "shadow_ml", None) is None:
+        raise HTTPException(status_code=503, detail="Shadow ML service is unavailable")
+    if _ml_training_lock.locked():
+        raise HTTPException(status_code=409, detail="Another ML training cycle is already running")
+    async with _ml_training_lock:
+        try:
+            result = await asyncio.to_thread(engine.shadow_ml.train_shadow_model, normalized)
+        except Exception as exc:
+            logging.getLogger(__name__).exception("Shadow ML training failed strategy=%s", normalized)
+            raise HTTPException(status_code=500, detail=f"Training failed: {type(exc).__name__}")
+    return result
 
 
 @app.get("/admin/signal-history")
