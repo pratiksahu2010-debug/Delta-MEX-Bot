@@ -526,7 +526,7 @@ class ShadowML:
                 vector = [_number(features.get(key)) for key in FEATURE_COLUMNS]
                 if label_at <= feature_at or any(value is None for value in vector):
                     continue
-                net_return = _number(row[6])
+                net_return = _number(row[5])
                 if net_return is None:
                     continue
                 result.append({
