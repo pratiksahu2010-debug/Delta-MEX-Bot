@@ -85,6 +85,7 @@ def test_point_in_time_feature_builder_uses_whitelist_and_excludes_labels_feedba
 
 def test_mex_features_capture_active_minimal_detector_values():
     record = _source_record(strategy="MEX", side="SHORT")
+    record["signal"].pop("risk_distance_atr", None)
     record["signal"]["risk_distance"] = 3.0
     record["signal"]["atr"] = 2.0
     record["signal"]["indicators"].update({
