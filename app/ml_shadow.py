@@ -15,7 +15,7 @@ import numpy as np
 
 
 FEATURE_VERSION = "pit_orb_mex_v3"
-LABEL_VERSION = "market_outcome_v1"
+LABEL_VERSION = "market_outcome_v2"
 FEEDBACK_LABEL_VERSION = "human_feedback_v1"
 ALGORITHM = "logistic_regression_l2_v1"
 MIN_TRAIN_SAMPLES = 30
@@ -651,6 +651,23 @@ class ShadowML:
             y_test_tp1 = np.asarray([row["tp1_hit"] for row in test], dtype=float)
             y_test_sl = np.asarray([row["stop_hit"] for row in test], dtype=float)
 
+            train_class_counts = {
+                "tp1": {"negative": int(np.sum(y_train_tp1 == 0)), "positive": int(np.sum(y_train_tp1 == 1))},
+                "stop": {"negative": int(np.sum(y_train_sl == 0)), "positive": int(np.sum(y_train_sl == 1))},
+            }
+            if any(len(np.unique(values)) < 2 for values in (y_train_tp1, y_train_sl)):
+                metrics = {"sample_counts": counts, "train_class_counts": train_class_counts}
+                self._update_training_run(
+                    run_id, "quality_rejected", train_count=len(train),
+                    validation_count=len(validation), test_count=len(test),
+                    split=split_metadata, metrics=metrics,
+                    error="Training labels do not contain both classes for TP1 and stop targets",
+                )
+                return {
+                    "run_id": run_id, "strategy": strategy, "status": "quality_rejected",
+                    **counts, "metrics": metrics,
+                }
+
             tp1_model = _fit_logistic(x_train, y_train_tp1)
             sl_model = _fit_logistic(x_train, y_train_sl)
             p_validation_tp1 = np.asarray([
@@ -704,6 +721,8 @@ class ShadowML:
             selected_coverage = (selected_count / int(np.sum(valid_returns))) if np.any(valid_returns) else 0.0
             quality_checks = {
                 "minimum_selected_test_samples": selected_count >= MIN_SELECTED_TEST_SAMPLES,
+                "test_tp1_has_both_classes": len(np.unique(y_test_tp1)) == 2,
+                "test_stop_has_both_classes": len(np.unique(y_test_sl)) == 2,
                 "positive_selected_net_expectancy": selected_expectancy is not None and selected_expectancy > 0.0,
                 "selected_expectancy_beats_baseline": (
                     selected_expectancy is not None and baseline_expectancy is not None
