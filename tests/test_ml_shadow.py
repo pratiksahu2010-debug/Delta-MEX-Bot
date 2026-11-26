@@ -83,6 +83,28 @@ def test_point_in_time_feature_builder_uses_whitelist_and_excludes_labels_feedba
     assert not any("feedback" in key or "outcome" in key or "mfe" in key for key in features)
 
 
+def test_mex_features_capture_active_minimal_detector_values():
+    record = _source_record(strategy="MEX", side="SHORT")
+    record["signal"]["risk_distance"] = 3.0
+    record["signal"]["atr"] = 2.0
+    record["signal"]["indicators"].update({
+        "tr_ratio": 1.8,
+        "close_location": 0.15,
+        "breakout_clearance_atr": 0.22,
+        "extension_atr": 0.9,
+        "quality_score": 84.0,
+        "ema21": 101.0,
+    })
+    features = build_point_in_time_features(record)
+    assert features["tr_ratio"] == 1.8
+    assert features["close_location"] == 0.15
+    assert features["directional_close_location"] == 0.85
+    assert features["breakout_clearance_atr"] == 0.22
+    assert features["quality_score"] == 84.0
+    assert features["ema21_distance_atr"] == 0.5
+    assert features["risk_distance_atr"] == 1.5
+
+
 def test_point_in_time_feature_builder_rejects_features_after_confirmation():
     record = _source_record()
     record["feature_at"] = "2026-11-21T09:18:00+00:00"
