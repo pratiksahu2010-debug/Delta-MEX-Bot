@@ -14,13 +14,14 @@ import uuid
 import numpy as np
 
 
-FEATURE_VERSION = "pit_orb_mex_v1"
+FEATURE_VERSION = "pit_orb_mex_v2"
 LABEL_VERSION = "market_outcome_v1"
 FEEDBACK_LABEL_VERSION = "human_feedback_v1"
 ALGORITHM = "logistic_regression_l2_v1"
 MIN_TRAIN_SAMPLES = 30
-MIN_VALIDATION_SAMPLES = 10
-MIN_TEST_SAMPLES = 10
+MIN_VALIDATION_SAMPLES = 20
+MIN_TEST_SAMPLES = 20
+MIN_SELECTED_TEST_SAMPLES = 10
 MIN_TOTAL_SAMPLES = MIN_TRAIN_SAMPLES + MIN_VALIDATION_SAMPLES + MIN_TEST_SAMPLES
 
 FEATURE_COLUMNS = (
@@ -63,6 +64,8 @@ FEATURE_COLUMNS = (
     "setup_to_trigger_seconds",
     "utc_hour",
     "utc_weekday",
+    "feature_coverage_ratio",
+    "feature_missing_count",
 )
 
 _NUMERIC_INDICATOR_KEYS = {
@@ -127,6 +130,10 @@ def build_point_in_time_features(record: dict) -> dict:
         number = _number(value)
         if number is not None:
             features[key] = number
+
+    # Coverage is explicit so absent telemetry is not silently indistinguishable
+    # from a genuine zero-valued indicator. The core set is strategy-neutral.
+    coverage_keys = ("atr_pct", "rvol", "rsi", "range_atr", "body_atr", "impulse_atr", "roc3")
 
     side = str(record.get("side") or signal.get("side") or "").upper()
     features["side_long"] = 1.0 if side == "LONG" else 0.0
@@ -200,6 +207,13 @@ def build_point_in_time_features(record: dict) -> dict:
         raise ValueError("point-in-time features contain information after signal confirmation")
     features["utc_hour"] = feature_at.hour + feature_at.minute / 60.0
     features["utc_weekday"] = float(feature_at.weekday())
+    present_core = sum(1 for key in coverage_keys if _number(features.get(key)) is not None and (
+        key in _NUMERIC_INDICATOR_KEYS or key == "atr_pct"
+    ) and (key not in _NUMERIC_INDICATOR_KEYS or (
+        _number(indicators.get(key)) is not None or _number(diagnostic_values.get(key)) is not None
+    )))
+    features["feature_coverage_ratio"] = present_core / len(coverage_keys)
+    features["feature_missing_count"] = float(len(coverage_keys) - present_core)
 
     clean = {}
     for key in FEATURE_COLUMNS:
@@ -389,6 +403,12 @@ class ShadowML:
                     continue
                 if outcome.get("method") != "completed_5m_ohlc_path":
                     continue
+                # Same-candle TP/SL ambiguity and horizon expiry are not clean
+                # directional labels; never teach the classifier from them.
+                if outcome.get("same_candle_ambiguous") or outcome.get("final_result") not in {"win", "loss"}:
+                    continue
+                if _number(row[6]) is None:
+                    continue
                 label_at = row[7] or row[8]
                 cursor = db.execute(
                     f"""INSERT INTO ml_market_labels
@@ -504,11 +524,15 @@ class ShadowML:
                 vector = [_number(features.get(key)) for key in FEATURE_COLUMNS]
                 if label_at <= feature_at or any(value is None for value in vector):
                     continue
+                net_return = _number(row[6])
+                if net_return is None:
+                    continue
                 result.append({
                     "evaluation_id": row[0], "feature_at": feature_at.isoformat(),
                     "features": features, "vector": vector,
                     "tp1_hit": int(bool(row[3])), "stop_hit": int(bool(row[4])),
-                    "net_return_pct": _number(row[5]),
+                    "net_return_pct": net_return,
+                    "side": "LONG" if float(features.get("side_long", 0.0)) >= 0.5 else "SHORT",
                     "horizon_bars": int(row[6] or 12),
                 })
             except (TypeError, ValueError, KeyError):
@@ -639,19 +663,60 @@ class ShadowML:
             selected_expectancy = (
                 float(np.mean(net_returns[selected])) if np.any(selected) else None
             )
+            side_metrics = {}
+            for side in ("LONG", "SHORT"):
+                side_mask = np.asarray([row.get("side") == side for row in test], dtype=bool) & valid_returns
+                side_metrics[side] = {
+                    "samples": int(np.sum(side_mask)),
+                    "net_expectancy_pct": float(np.mean(net_returns[side_mask])) if np.any(side_mask) else None,
+                    "tp1_rate": float(np.mean(y_test_tp1[side_mask])) if np.any(side_mask) else None,
+                    "stop_rate": float(np.mean(y_test_sl[side_mask])) if np.any(side_mask) else None,
+                }
+            selected_count = int(np.sum(selected))
+            selected_coverage = (selected_count / int(np.sum(valid_returns))) if np.any(valid_returns) else 0.0
+            quality_checks = {
+                "minimum_selected_test_samples": selected_count >= MIN_SELECTED_TEST_SAMPLES,
+                "positive_selected_net_expectancy": selected_expectancy is not None and selected_expectancy > 0.0,
+                "selected_expectancy_beats_baseline": (
+                    selected_expectancy is not None and baseline_expectancy is not None
+                    and selected_expectancy >= baseline_expectancy
+                ),
+                "nontrivial_test_coverage": selected_coverage >= 0.10,
+                "tp1_brier_not_worse_than_baseline": (
+                    test_metrics["tp1"]["brier_score"] is not None
+                    and test_metrics["tp1"]["baseline_brier_score"] is not None
+                    and test_metrics["tp1"]["brier_score"] <= test_metrics["tp1"]["baseline_brier_score"]
+                ),
+            }
+            quality_passed = all(quality_checks.values())
             metrics = {
                 "sample_counts": counts,
+                "side_test_metrics": side_metrics,
+                "feature_coverage": {
+                    "mean": float(np.mean([row["features"].get("feature_coverage_ratio", 0.0) for row in rows])) if rows else 0.0,
+                    "minimum": float(np.min([row["features"].get("feature_coverage_ratio", 0.0) for row in rows])) if rows else 0.0,
+                },
+                "quality_gate": {"passed": quality_passed, "checks": quality_checks},
                 "validation": validation_metrics,
                 "test": test_metrics,
                 "baseline_strategy_expectancy_pct": baseline_expectancy,
                 "shadow_selected_expectancy_pct": selected_expectancy,
-                "shadow_selected_samples": int(np.sum(selected)),
-                "shadow_selected_coverage": (
-                    float(np.sum(selected)) / int(np.sum(valid_returns))
-                    if np.any(valid_returns) else None
-                ),
+                "shadow_selected_samples": selected_count,
+                "shadow_selected_coverage": selected_coverage,
                 "promotion": "shadow_only_no_automatic_promotion",
             }
+            if not quality_passed:
+                self._update_training_run(
+                    run_id, "quality_rejected", train_count=len(train),
+                    validation_count=len(validation), test_count=len(test),
+                    split=split_metadata, metrics=metrics,
+                    error="Out-of-sample quality gate failed; no model was saved",
+                )
+                return {
+                    "run_id": run_id, "strategy": strategy, "status": "quality_rejected",
+                    **counts, "metrics": metrics,
+                }
+
             model_version = f"{strategy.lower()}-{FEATURE_VERSION}-{run_id[:12]}"
             parameters = {
                 "feature_columns": list(FEATURE_COLUMNS),
