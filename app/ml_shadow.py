@@ -207,11 +207,13 @@ def build_point_in_time_features(record: dict) -> dict:
         raise ValueError("point-in-time features contain information after signal confirmation")
     features["utc_hour"] = feature_at.hour + feature_at.minute / 60.0
     features["utc_weekday"] = float(feature_at.weekday())
-    present_core = sum(1 for key in coverage_keys if _number(features.get(key)) is not None and (
-        key in _NUMERIC_INDICATOR_KEYS or key == "atr_pct"
-    ) and (key not in _NUMERIC_INDICATOR_KEYS or (
-        _number(indicators.get(key)) is not None or _number(diagnostic_values.get(key)) is not None
-    )))
+    present_core = sum(1 for key in coverage_keys if (
+        (key in _NUMERIC_INDICATOR_KEYS and (
+            _number(indicators.get(key)) is not None
+            or _number(diagnostic_values.get(key)) is not None
+        ))
+        or (key == "atr_pct" and atr_value is not None and entry_reference is not None and entry_reference > 0)
+    ))
     features["feature_coverage_ratio"] = present_core / len(coverage_keys)
     features["feature_missing_count"] = float(len(coverage_keys) - present_core)
 
