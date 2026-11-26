@@ -158,7 +158,7 @@ def build_point_in_time_features(record: dict) -> dict:
         number = _number(indicators.get(key))
         if number is not None:
             features[key] = number
-    if features.get("close_location") is not None:
+    if _number(indicators.get("close_location")) is not None:
         features["directional_close_location"] = (
             features["close_location"] if side == "LONG" else 1.0 - features["close_location"]
         )
@@ -238,7 +238,7 @@ def build_point_in_time_features(record: dict) -> dict:
             _number(indicators.get(key)) is not None
             or _number(diagnostic_values.get(key)) is not None
         ))
-        or (key == "atr_pct" and atr_value is not None and entry_reference is not None and entry_reference > 0)
+        or (key == "atr_pct" and atr_value is not None and atr_value > 0 and entry_reference is not None and entry_reference > 0)
     ))
     features["feature_coverage_ratio"] = present_core / len(coverage_keys)
     features["feature_missing_count"] = float(len(coverage_keys) - present_core)
@@ -684,7 +684,7 @@ class ShadowML:
                 for row in test
             ], dtype=float)
             valid_returns = np.isfinite(net_returns)
-            selected = (p_test_tp1 >= p_test_sl) & valid_returns
+            selected = (p_test_tp1 >= 0.50) & (p_test_tp1 > p_test_sl) & valid_returns
             baseline_expectancy = (
                 float(np.mean(net_returns[valid_returns])) if np.any(valid_returns) else None
             )
