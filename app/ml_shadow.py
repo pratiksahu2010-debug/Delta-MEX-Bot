@@ -413,7 +413,7 @@ class ShadowML:
             rows = db.execute(
                 f"""SELECT o.evaluation_id,o.strategy,o.horizon_bars,o.tp1_hit,o.stop_hit,
                            o.final_result,o.net_return_pct,o.resolution_at,o.updated_at,
-                           o.outcome_json
+                           o.outcome_json,o.same_candle_ambiguous
                     FROM signal_outcomes o
                     JOIN signal_journal j
                       ON j.evaluation_id=o.evaluation_id AND j.strategy=o.strategy
@@ -433,7 +433,7 @@ class ShadowML:
                     continue
                 # Same-candle TP/SL ambiguity and horizon expiry are not clean
                 # directional labels; never teach the classifier from them.
-                if outcome.get("same_candle_ambiguous") or outcome.get("final_result") not in {"win", "loss"}:
+                if row[10] or outcome.get("same_candle_ambiguous") or row[5] not in {"win", "loss"}:
                     continue
                 if _number(row[6]) is None:
                     continue
