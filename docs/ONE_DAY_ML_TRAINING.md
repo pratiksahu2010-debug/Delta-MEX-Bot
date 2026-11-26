@@ -30,9 +30,9 @@ curl --fail-with-body -X POST \
 
 - Training features are point-in-time snapshots. Market outcomes and human feedback remain separate.
 - Missing feature telemetry is represented explicitly by coverage ratio and missing-count features; zero is no longer the only indication of missingness. The feature set includes the active minimal MEX detector's TR ratio, RVOL, close location, Donchian breakout clearance, EMA21 extension, and quality score.
-- Only completed, unambiguous OHLC-path outcomes with a finite net return are eligible labels.
+- Only completed, unambiguous OHLC-path outcomes with a finite net return are eligible labels. The label version is bumped so previously stored ambiguous/expired labels cannot leak into this training cycle.
 - Training, validation, and test data are chronological with a label-horizon embargo.
-- The minimum validation and test sets are 20 samples each; the test selection must contain at least 10 observations.
+- The minimum validation and test sets are 20 samples each; both training targets and both test targets must contain positive and negative examples; the test selection must contain at least 10 observations.
 - The candidate is saved only when out-of-sample selected expectancy is positive, at least as good as the full-test baseline, coverage is nontrivial, and TP1 Brier score is no worse than the training-prevalence baseline.
 - Failed gates produce `quality_rejected`; insufficient chronological data produces `insufficient_data`. Neither status replaces an existing model.
 - A passing candidate is saved in shadow mode only. There is no automatic promotion and no effect on live signal decisions.
