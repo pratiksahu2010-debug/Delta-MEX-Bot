@@ -78,6 +78,8 @@ def test_point_in_time_feature_builder_uses_whitelist_and_excludes_labels_feedba
     assert features["session_new_york"] == 1.0
     assert features["entry_path_retest"] == 1.0
     assert features["entry_extension_atr"] == 0.25
+    assert 0.0 < features["feature_coverage_ratio"] < 1.0
+    assert features["feature_missing_count"] > 0.0
     assert not any("feedback" in key or "outcome" in key or "mfe" in key for key in features)
 
 
@@ -300,6 +302,9 @@ def test_orb_and_mex_train_separate_shadow_models_with_oos_metrics(tmp_path):
         assert "calibration_bins" in result["metrics"]["test"]["tp1"]
         assert result["metrics"]["baseline_strategy_expectancy_pct"] is not None
         assert result["metrics"]["promotion"] == "shadow_only_no_automatic_promotion"
+        assert result["metrics"]["quality_gate"]["passed"] is True
+        assert set(result["metrics"]["side_test_metrics"]) == {"LONG", "SHORT"}
+        assert result["metrics"]["feature_coverage"]["mean"] == 0.0
 
     status = service.status()
     assert status["mode"] == "shadow_only"
