@@ -141,6 +141,8 @@ def build_point_in_time_features(record: dict) -> dict:
     # Coverage is explicit so absent telemetry is not silently indistinguishable
     # from a genuine zero-valued indicator. The core set is strategy-neutral.
     coverage_keys = ("atr_pct", "rvol", "tr_ratio", "close_location", "breakout_clearance_atr", "extension_atr", "quality_score")
+    atr_value = _number(signal.get("atr"))
+    entry_reference = _number(signal.get("entry_reference") or record.get("entry_price"))
 
     side = str(record.get("side") or signal.get("side") or "").upper()
     features["side_long"] = 1.0 if side == "LONG" else 0.0
@@ -172,8 +174,6 @@ def build_point_in_time_features(record: dict) -> dict:
         if number is not None:
             features[key] = number
 
-    atr_value = _number(signal.get("atr"))
-    entry_reference = _number(signal.get("entry_reference") or record.get("entry_price"))
     if atr_value and entry_reference and entry_reference > 0:
         features["atr_pct"] = atr_value / entry_reference * 100.0
 
